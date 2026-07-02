@@ -15,6 +15,25 @@ first-class testing package for protocol authors.
 
 ### Added
 
+- **Codec ergonomics.** `Handle(ctx, fn)` registers a message type and
+  its handler in one call, inferring the type from the
+  `func(*M, transport.Host)` signature and picking the codec: the
+  reflective `WireCodec[M]` by default, or `SelfCodec[M]` when `*M`
+  implements the new `SelfMarshaler`
+  (`MarshalWire`/`UnmarshalWire`). `WireCodec[M]` is a zero-config codec
+  for real message types — strings, `[]byte`, slices, maps
+  (deterministic sorted-key encoding), arrays, nested structs, and
+  pointers to structs, on top of every fixed-size type — compiling a
+  cached per-type encode/decode plan via reflection (the trick
+  `wireIDCache` uses). Its byte layout is normative in
+  `docs/wire-format.md`; platform-sized int/uint, interface, chan, func,
+  and complex are rejected at plan-compile time with a clear error.
+  `JSONCodec[M]` (core, `encoding/json`) is added for debugging, and a
+  new nested module `codec/protobuf` ships `ProtoCodec[M proto.Message]`
+  so protobuf shops keep the core zero-dependency. Strict mode gains a
+  once-per-type Warn nudge when a message codec is registered for a type
+  without `WireName()`. The `cmd/gossip` hand-rolled `Codec` and the
+  `cmd/pingpong` `BinaryCodec` registrations are replaced by `Handle`.
 - **Supervision and restart.** `RegisterFactory(func() Protocol, ...)`
   plus `WithSupervision(Supervision{OnPanic, MaxRestarts, Window,
   Backoff, OnGiveUp})` give a panicking protocol a real recovery

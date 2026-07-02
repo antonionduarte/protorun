@@ -46,6 +46,36 @@ func BenchmarkBinaryCodec_Unmarshal(b *testing.B) {
 	}
 }
 
+// BenchmarkWireCodec_Marshal measures the reflective codec's marshal
+// path on the same fixed-size message as BinaryCodec, so the plan-walk
+// overhead versus encoding/binary is directly comparable.
+func BenchmarkWireCodec_Marshal(b *testing.B) {
+	codec := WireCodec[*benchMsg]{}
+	msg := &benchMsg{Seq: 42}
+
+	for b.Loop() {
+		if _, err := codec.Marshal(msg); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkWireCodec_Unmarshal is the receive-side counterpart to
+// BenchmarkWireCodec_Marshal.
+func BenchmarkWireCodec_Unmarshal(b *testing.B) {
+	codec := WireCodec[*benchMsg]{}
+	payload, err := codec.Marshal(&benchMsg{Seq: 42})
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	for b.Loop() {
+		if _, err := codec.Unmarshal(payload); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 // BenchmarkWireID measures the cost of computing a wire identifier:
 // per-call overhead for the lookup-by-type path.
 func BenchmarkWireID(b *testing.B) {

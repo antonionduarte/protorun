@@ -4,18 +4,25 @@
 	coverage vulncheck deadcode \
 	tools-install hooks-install
 
+# MODULES is every Go module in the repo. The core module (.) stays
+# zero-dependency; the interop codecs under codec/ are nested modules
+# with their own go.mod. go.work (tracked) ties them together for local
+# builds. Targets that must cover the whole repo loop over this list;
+# root-only helpers (run, bench, coverage gate) stay on the core module.
+MODULES := . codec/protobuf
+
 # -----------------------------------------------------------------------
 # Build / run
 # -----------------------------------------------------------------------
 
 build:
-	go build ./...
+	@for m in $(MODULES); do echo "==> build $$m"; (cd $$m && go build ./...) || exit 1; done
 
 test:
-	go test ./...
+	@for m in $(MODULES); do echo "==> test $$m"; (cd $$m && go test ./...) || exit 1; done
 
 test-race:
-	go test -race ./...
+	@for m in $(MODULES); do echo "==> test-race $$m"; (cd $$m && go test -race ./...) || exit 1; done
 
 bench:
 	go test -bench=. -run=^$$ -benchmem ./...
@@ -34,36 +41,36 @@ run:
 # -----------------------------------------------------------------------
 
 lint:
-	golangci-lint run ./...
+	@for m in $(MODULES); do echo "==> lint $$m"; (cd $$m && golangci-lint run ./...) || exit 1; done
 
 lint-fix:
-	golangci-lint run --fix ./...
+	@for m in $(MODULES); do (cd $$m && golangci-lint run --fix ./...) || exit 1; done
 
 # lint-new is the CI gate: fail only on issues in code changed against
 # origin/main. Old code is surfaced but not blocked.
 lint-new:
-	golangci-lint run --new-from-rev=origin/main ./...
+	@for m in $(MODULES); do (cd $$m && golangci-lint run --new-from-rev=origin/main ./...) || exit 1; done
 
 coverage:
 	go test ./... -coverprofile=coverage.out -covermode=atomic
 	go tool cover -func=coverage.out | tail -1
 
 vulncheck:
-	go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+	@for m in $(MODULES); do echo "==> vulncheck $$m"; (cd $$m && go run golang.org/x/vuln/cmd/govulncheck@latest ./...) || exit 1; done
 
 deadcode:
-	go run golang.org/x/tools/cmd/deadcode@latest -test ./...
+	@for m in $(MODULES); do echo "==> deadcode $$m"; (cd $$m && go run golang.org/x/tools/cmd/deadcode@latest -test ./...) || exit 1; done
 
 # Apply gopls' modernize fixes in place (sync.WaitGroup.Go, range-over-int,
 # t.Context(), maps/slices helpers, etc.). Idempotent — safe to re-run.
 # `go modernize` itself doesn't exist; the tool ships inside gopls.
 modernize:
-	go run golang.org/x/tools/gopls/internal/analysis/modernize/cmd/modernize@latest -fix ./...
+	@for m in $(MODULES); do (cd $$m && go run golang.org/x/tools/gopls/internal/analysis/modernize/cmd/modernize@latest -fix ./...) || exit 1; done
 
 # Same analyzer in report-only mode. Useful in CI to fail when new code
 # would be modernized.
 modernize-check:
-	go run golang.org/x/tools/gopls/internal/analysis/modernize/cmd/modernize@latest ./...
+	@for m in $(MODULES); do echo "==> modernize-check $$m"; (cd $$m && go run golang.org/x/tools/gopls/internal/analysis/modernize/cmd/modernize@latest ./...) || exit 1; done
 
 # -----------------------------------------------------------------------
 # One-shot setup: install developer-side quality tools and git hooks

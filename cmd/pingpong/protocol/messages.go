@@ -2,10 +2,9 @@ package protocol
 
 import "github.com/antonionduarte/protorun"
 
-// PingMessage and PongMessage are pure fixed-size payloads. Because
-// protorun.BaseMessage is a zero-byte marker, encoding/binary can size
-// these structs and protorun.BinaryCodec[*M] handles encode/decode for
-// us; no manual codec needed.
+// PingMessage and PongMessage are pure fixed-size payloads. The
+// protocol registers them with protorun.Handle, which picks the
+// reflective WireCodec[*M] automatically; no manual codec needed.
 type (
 	PingMessage struct {
 		protorun.BaseMessage

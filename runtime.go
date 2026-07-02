@@ -107,6 +107,11 @@ type Runtime struct {
 	// they enable. strict=false (the default) makes them all no-ops.
 	strict               bool
 	strictHandlerTimeout time.Duration
+
+	// wireNameWarned dedups the strict-mode "message type has no
+	// WireName()" nudge to once per wire id. map[uint64]struct{}, only
+	// ever touched when strict is on. See strictWireNameNudge.
+	wireNameWarned sync.Map
 }
 
 // SessionConnectedHandler can be implemented by a protocol that wants to be

@@ -181,6 +181,25 @@ func (p *protoProtocol) strictMailboxOccupancy(mailbox mailbox, depth int) {
 		"policy", mailbox.policy().String())
 }
 
+// strictWireNameNudge warns, once per wire id, when a message codec is
+// registered for a type that does not implement WireNamer. The wire id
+// then derives from the Go type name and silently changes on a rename or
+// package move — a documented production footgun. It is a nudge, not a
+// failure: no panic, and off entirely unless strict mode is enabled.
+func (c *protocolContext) strictWireNameNudge(wireID uint64, typeName string, hasWireName bool) {
+	if c.runtime == nil || !c.runtime.strict || hasWireName {
+		return
+	}
+	if _, loaded := c.runtime.wireNameWarned.LoadOrStore(wireID, struct{}{}); loaded {
+		return
+	}
+	c.logger.Warn("protorun strict: message type has no WireName(); "+
+		"its wire id derives from the Go type name and will change if the "+
+		"type is renamed or moved between packages",
+		"type", typeName,
+		"wireID", fmt.Sprintf("%#x", wireID))
+}
+
 // strictReplyWithoutHandler is invoked by deliverReply when an inbound
 // reply lands without a matching pending entry. In strict mode it logs
 // at warning level so the operator notices; non-strict it stays a

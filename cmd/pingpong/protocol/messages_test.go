@@ -6,12 +6,12 @@ import (
 	"github.com/antonionduarte/protorun"
 )
 
-// Pingpong uses protorun.BinaryCodec for its messages. BaseMessage is
-// a zero-byte marker, so encoding/binary can size the structs and the
-// codec works with no manual encode/decode logic.
+// Pingpong registers its messages with protorun.Handle, which selects
+// the reflective WireCodec[*M]. These tests exercise that same codec
+// directly to prove the fixed-size round-trip.
 
-func TestPingBinaryCodec_RoundTrip(t *testing.T) {
-	codec := protorun.BinaryCodec[*PingMessage]{}
+func TestPingWireCodec_RoundTrip(t *testing.T) {
+	codec := protorun.WireCodec[*PingMessage]{}
 	original := NewPingMessage(42)
 	payload, err := codec.Marshal(original)
 	if err != nil {
@@ -26,8 +26,8 @@ func TestPingBinaryCodec_RoundTrip(t *testing.T) {
 	}
 }
 
-func TestPongBinaryCodec_RoundTrip(t *testing.T) {
-	codec := protorun.BinaryCodec[*PongMessage]{}
+func TestPongWireCodec_RoundTrip(t *testing.T) {
+	codec := protorun.WireCodec[*PongMessage]{}
 	original := NewPongMessage(99)
 	payload, err := codec.Marshal(original)
 	if err != nil {

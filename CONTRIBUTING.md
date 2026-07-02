@@ -40,6 +40,28 @@ resource-heavy:
 GOSSIP_SCALE_10K=1 go test -run TestGossip_10000Nodes_Scale -timeout 10m ./cmd/gossip/
 ```
 
+## Modules and the workspace
+
+The repo is a Go workspace. The core module (`.`) is deliberately
+**zero-dependency** (stdlib only) — that is a load-bearing property, so
+anything needing a third-party dependency goes in a nested module with
+its own `go.mod`. Today that is `codec/protobuf`
+(`ProtoCodec[M proto.Message]`), which requires
+`google.golang.org/protobuf`.
+
+`go.work` at the repo root ties the modules together and is **tracked in
+git** (only `go.work.sum` is ignored): this repo *is* the workspace, so
+a fresh checkout resolves the nested modules against the in-tree core
+without any published version. The nested module's `go.mod` also carries
+a `replace github.com/antonionduarte/protorun => ../..` so it builds
+standalone too.
+
+The `Makefile` targets (`build`, `test`, `test-race`, `lint`,
+`deadcode`, `modernize-check`, `vulncheck`) loop over every module via
+the `MODULES` variable, and CI runs the nested module's tests as a
+separate step. When you add a module, add it to `MODULES` and to
+`go.work`.
+
 ## Conventions
 
 ### Protocol authoring

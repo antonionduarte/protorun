@@ -16,13 +16,13 @@ type myMessage struct {
 }
 
 // echoProtocol is a minimal Protocol implementation suitable for example
-// snippets. It does no work, but registers a codec and a handler so the
-// snippet compiles.
+// snippets. It does no work, but registers a message type and handler so
+// the snippet compiles. protorun.Handle picks the codec (here the
+// reflective WireCodec) and registers the handler in one call.
 type echoProtocol struct{}
 
 func (echoProtocol) Start(ctx protorun.ProtocolContext) {
-	protorun.RegisterCodec(ctx, protorun.BinaryCodec[*myMessage]{})
-	protorun.RegisterHandler(ctx, func(_ *myMessage, _ transport.Host) {})
+	protorun.Handle(ctx, func(_ *myMessage, _ transport.Host) {})
 }
 func (echoProtocol) Init(_ protorun.ProtocolContext) {}
 
@@ -44,6 +44,20 @@ func Example() {
 	_ = rt.Run()
 	fmt.Println("done")
 	// Output: done
+}
+
+// ExampleHandle shows the one-line message registration: Handle infers
+// the message type from the handler, picks a codec (SelfCodec if the
+// type implements SelfMarshaler, otherwise the reflective WireCodec),
+// and registers both the codec and the handler.
+func ExampleHandle() {
+	var ctx protorun.ProtocolContext // supplied by the framework in Start
+	if ctx == nil {                  // illustrative guard for the godoc snippet
+		return
+	}
+	protorun.Handle(ctx, func(m *myMessage, from transport.Host) {
+		fmt.Printf("got seq=%d from=%s\n", m.Seq, from.String())
+	})
 }
 
 // ExampleRegisterHandler shows the typed handler signature: a handler

@@ -49,8 +49,7 @@ type Pinger struct {
 
 func (p *Pinger) Start(ctx protorun.ProtocolContext) {
     p.ctx = ctx
-    protorun.RegisterCodec(ctx, protorun.BinaryCodec[*PingMessage]{})
-    protorun.RegisterHandler(ctx, p.handle)
+    protorun.Handle(ctx, p.handle) // registers codec + handler in one call
 }
 
 func (p *Pinger) Init(ctx protorun.ProtocolContext) {
@@ -141,11 +140,40 @@ Optional interfaces a protocol can also implement:
 Embed `protorun.BaseMessage` and you have a wire-ready type. The wire ID is
 derived from the Go type name (FNV-1a hash). For long-lived deployments that
 might rename types, implement `WireName() string` on the type to freeze the
-ID.
+ID (strict mode warns once per type when you don't).
 
-`BinaryCodec[*M]` works for fixed-size messages (`encoding/binary` rules
-apply). For variable-length payloads, write a custom `Codec[*M]` on top of
-the helpers in `wire` (`WriteUint64`, `ReadBytes`, etc.).
+`protorun.Handle(ctx, fn)` is the default registration path: it infers the
+message type from your `func(*M, transport.Host)` handler, picks a codec, and
+registers both the codec and the handler in one call.
+
+```go
+protorun.Handle(ctx, p.onPing) // func(*Ping, transport.Host)
+```
+
+Which codec `Handle` picks:
+
+- **`WireCodec[*M]`** — the reflective default. Handles strings, `[]byte`,
+  slices, maps (deterministic sorted-key encoding), arrays, nested structs,
+  and pointers to structs, on top of every fixed-size type. Per-type
+  encode/decode plans are compiled once and cached. Its byte layout is
+  normative in [`docs/wire-format.md`](docs/wire-format.md). Used for any type
+  that doesn't implement `SelfMarshaler`.
+- **`SelfCodec[*M]`** — used automatically when `*M` implements
+  `SelfMarshaler` (`MarshalWire() ([]byte, error)` / `UnmarshalWire([]byte)
+  error`), letting a message own its encoding while still registering via
+  `Handle`.
+
+For a custom codec, keep the explicit two-call form —
+`protorun.RegisterCodec(ctx, myCodec)` then
+`protorun.RegisterHandler(ctx, fn)`. Other codecs the framework ships:
+
+- **`BinaryCodec[*M]`** — `encoding/binary` for fixed-size structs; the
+  lowest-overhead option when your message has no variable-length fields.
+- **`JSONCodec[*M]`** — `encoding/json`, for development and wire
+  inspection. Not a stable wire format.
+- **`codec/protobuf` (nested module)** — `ProtoCodec[M proto.Message]` for
+  shops with existing `.proto` definitions. Lives in its own module so the
+  core stays zero-dependency.
 
 ### Inter-protocol coordination (IPC)
 

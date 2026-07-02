@@ -241,11 +241,26 @@ Restart budget: more than `MaxRestarts` within `Window` triggers
 
 ---
 
-## Phase 2 — codec ergonomics (v0.4.0)
+## Phase 2 — codec ergonomics (v0.4.0) — done
 
-`BinaryCodec` covers fixed-size structs only; everything real
-(strings, slices) needs a hand-written codec over `wire`. The
-competition gets this for free from protobuf. Three layers of fix:
+Delivered: `WireCodec[M]`, a reflection-based default codec with a
+cached per-type plan covering strings, `[]byte`, slices, maps
+(sorted-key deterministic encode), arrays, nested structs, and pointers
+to structs on top of every fixed-size type — normative format in
+`docs/wire-format.md`, round-trip + arbitrary-bytes fuzz tests, benches
+against `BinaryCodec`. `Handle(ctx, fn)` infers `M` and registers
+`WireCodec[M]` (or `SelfCodec[M]` when the type implements the new
+`SelfMarshaler`) plus the handler in one call. Interop: `JSONCodec[M]`
+in core and a nested `codec/protobuf` module (`ProtoCodec[M
+proto.Message]`, own go.mod + `replace`, tracked `go.work`, Makefile/CI
+covering both modules). Strict mode gains a once-per-type WireName nudge.
+`cmd/gossip` (hand-rolled codec) and `cmd/pingpong` (BinaryCodec)
+migrated to `Handle`; README quick start rewritten around it.
+
+Deviations from the sketch below: `WireCodec` itself does not check
+`SelfMarshaler` — `Handle` picks `SelfCodec` for such types instead, so
+the two codecs stay single-purpose; the reflective codec is pure
+reflection.
 
 ### 2.1 `WireCodec[M]` — reflective default codec
 

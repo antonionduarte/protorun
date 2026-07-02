@@ -6,9 +6,6 @@ Everything below v1.0 may break API and wire format.
 
 ## Pending (see docs/roadmap.md for designs)
 
-- [ ] Phase 2 (v0.4.0): `WireCodec[M]` reflective codec for
-      variable-length messages, `Handle` one-line registration,
-      `codec/protobuf` nested module, `JSONCodec`.
 - [ ] Phase 3 (v0.5.0): `Address` migration for `transport.Layer`
       (was pending here already), dial/listen hooks +
       `transport.WithTLS`, `transport/quic` nested module.
@@ -25,6 +22,16 @@ Everything below v1.0 may break API and wire format.
 
 ## Done
 
+- [x] Phase 2 (v0.4.0): codec ergonomics — `WireCodec[M]` reflective
+      default codec (cached per-type plan; strings/`[]byte`/slices/maps/
+      arrays/nested-structs/pointers; deterministic sorted-key maps;
+      normative format in `docs/wire-format.md`; round-trip + fuzz
+      tests; benches vs `BinaryCodec`), `Handle` one-line registration
+      (picks `WireCodec` or `SelfCodec` via `SelfMarshaler`),
+      `JSONCodec` (core), `codec/protobuf` nested module
+      (`ProtoCodec[M proto.Message]`, own go.mod + `replace`, tracked
+      `go.work`), strict-mode WireName nudge. `cmd/gossip` and
+      `cmd/pingpong` migrated to `Handle`.
 - [x] Phase 1 (v0.3.0): supervision — `RegisterFactory` +
       `WithSupervision`, panic directives
       (Resume/Restart/Stop/Escalate), per-protocol supervisor with

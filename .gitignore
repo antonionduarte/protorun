@@ -23,5 +23,7 @@ CLAUDE.md
 # Dependency directories (remove the comment below to include it)
 # vendor/
 
-# Go workspace file
-go.work
+# go.work is intentionally tracked: this repo *is* the workspace (core
+# module + nested codec modules resolved locally). Only the generated
+# checksum file is ignored.
+go.work.sum

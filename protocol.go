@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"reflect"
 	"runtime/debug"
 	"sync"
 	"sync/atomic"
@@ -733,7 +734,67 @@ func (p *protoProtocol) deliverSessionEvent(ev sessionEvent) {
 // flows through ctx.registerCodec internally. Wire id derives from
 // M's Go type name (or M.WireName() if implemented).
 func RegisterCodec[M Message](ctx ProtocolContext, c Codec[M]) {
-	ctx.binding().registerCodec(WireID[M](), codecAdapter[M]{c: c})
+	b := ctx.binding()
+	b.strictWireNameNudge(WireID[M](), typeNameOf[M](), implementsWireNamer[M]())
+	b.registerCodec(WireID[M](), codecAdapter[M]{c: c})
+}
+
+// Handle registers a message type M and its handler in one call, picking
+// the codec automatically: SelfCodec[M] when M implements SelfMarshaler,
+// otherwise the reflective WireCodec[M]. It is exactly
+// RegisterCodec(ctx, codec) followed by RegisterHandler(ctx, fn), so
+// strict-mode double-registration behaves identically to doing the two
+// calls by hand.
+//
+// Handle is the default path for message types. Keep the explicit
+// two-call form (RegisterCodec + RegisterHandler) when you need a custom
+// Codec[M] — a hand-rolled encoding, a foreign format, a shared codec
+// instance.
+//
+// For the WireCodec path, Handle compiles the type's plan eagerly and
+// panics if a field kind is unsupported (platform-sized int/uint,
+// interface, chan, func, complex): that is a programming error, so it
+// surfaces at Start rather than silently on the first Send. Types with a
+// SelfMarshaler are not plan-checked — their encoding is their own.
+func Handle[M Message](ctx ProtocolContext, fn func(M, transport.Host)) {
+	var codec Codec[M]
+	var zero M
+	if _, ok := any(zero).(SelfMarshaler); ok {
+		codec = SelfCodec[M]{}
+	} else {
+		if t := reflect.TypeOf(zero); t != nil && t.Kind() == reflect.Pointer &&
+			t.Elem().Kind() == reflect.Struct {
+			if _, err := wirePlanFor(t.Elem()); err != nil {
+				panic(fmt.Sprintf("protorun: Handle[%s]: WireCodec cannot encode this type: %v",
+					typeNameOf[M](), err))
+			}
+		}
+		codec = WireCodec[M]{}
+	}
+	RegisterCodec(ctx, codec)
+	RegisterHandler(ctx, fn)
+}
+
+// implementsWireNamer reports whether M (or *M's element) implements
+// WireNamer, mirroring WireID's probe so a pointer-receiver WireName is
+// detected even off a typed-nil M.
+func implementsWireNamer[M Message]() bool {
+	var zero M
+	t := reflect.TypeOf(zero)
+	if t != nil && t.Kind() == reflect.Pointer {
+		_, ok := reflect.New(t.Elem()).Interface().(WireNamer)
+		return ok
+	}
+	_, ok := any(zero).(WireNamer)
+	return ok
+}
+
+// typeNameOf returns M's Go type name for diagnostics.
+func typeNameOf[M Message]() string {
+	if t := reflect.TypeOf(*new(M)); t != nil {
+		return t.String()
+	}
+	return "<nil>"
 }
 
 // RegisterHandler registers fn as the handler for messages of type M

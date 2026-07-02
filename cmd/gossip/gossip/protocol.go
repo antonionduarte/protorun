@@ -80,8 +80,7 @@ type BroadcastAck struct {
 
 func (p *Protocol) Start(ctx protorun.ProtocolContext) {
 	p.ctx = ctx
-	protorun.RegisterCodec(ctx, Codec{})
-	protorun.RegisterHandler(ctx, p.handleInbound)
+	protorun.Handle(ctx, p.handleInbound)
 	protorun.SubscribeNotification(ctx, p.handleViewChanged)
 	protorun.RegisterRequestHandler(ctx, p.handleBroadcast)
 }

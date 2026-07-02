@@ -23,10 +23,8 @@ func (p *PingPongProtocol) Start(ctx protorun.ProtocolContext) {
 	p.logger = ctx.Logger()
 	p.ctx = ctx
 
-	protorun.RegisterCodec(ctx, protorun.BinaryCodec[*PingMessage]{})
-	protorun.RegisterCodec(ctx, protorun.BinaryCodec[*PongMessage]{})
-	protorun.RegisterHandler(ctx, p.HandlePing)
-	protorun.RegisterHandler(ctx, p.HandlePong)
+	protorun.Handle(ctx, p.HandlePing)
+	protorun.Handle(ctx, p.HandlePong)
 }
 
 func (p *PingPongProtocol) Init(ctx protorun.ProtocolContext) {

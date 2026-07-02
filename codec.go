@@ -152,3 +152,48 @@ func (BinaryCodec[M]) Unmarshal(data []byte) (M, error) {
 	}
 	return ptr, nil
 }
+
+// SelfMarshaler lets a message type own its wire encoding. A type that
+// implements it can be registered with SelfCodec[M] (directly, or
+// automatically by Handle) instead of a reflective or hand-written
+// codec. The two halves must round-trip: UnmarshalWire(MarshalWire())
+// must reconstruct the value.
+//
+// Implement this when a message needs an encoding WireCodec can't
+// express (a compact varint layout, a foreign format, a checksum) but
+// you still want the one-call Handle registration.
+type SelfMarshaler interface {
+	MarshalWire() ([]byte, error)
+	UnmarshalWire(data []byte) error
+}
+
+// SelfCodec is the Codec[M] that defers to M's own SelfMarshaler. Marshal
+// calls the value's MarshalWire; Unmarshal allocates a fresh M (like
+// BinaryCodec, via reflect.New) and calls UnmarshalWire on it. M must be
+// a pointer to a struct that implements SelfMarshaler.
+type SelfCodec[M Message] struct{}
+
+func (SelfCodec[M]) Marshal(m M) ([]byte, error) {
+	sm, ok := any(m).(SelfMarshaler)
+	if !ok {
+		return nil, fmt.Errorf("SelfCodec[M]: %T does not implement SelfMarshaler", m)
+	}
+	return sm.MarshalWire()
+}
+
+func (SelfCodec[M]) Unmarshal(data []byte) (M, error) {
+	var zero M
+	t := reflect.TypeOf(zero)
+	if t == nil || t.Kind() != reflect.Pointer {
+		return zero, fmt.Errorf("SelfCodec[M]: M must be a pointer type, got %T", zero)
+	}
+	ptr := reflect.New(t.Elem()).Interface().(M)
+	sm, ok := any(ptr).(SelfMarshaler)
+	if !ok {
+		return zero, fmt.Errorf("SelfCodec[M]: %T does not implement SelfMarshaler", ptr)
+	}
+	if err := sm.UnmarshalWire(data); err != nil {
+		return zero, fmt.Errorf("SelfCodec.Unmarshal: %w", err)
+	}
+	return ptr, nil
+}
