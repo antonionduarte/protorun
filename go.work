@@ -8,4 +8,5 @@ go 1.26.3
 use (
 	.
 	./codec/protobuf
+	./transport/quic
 )

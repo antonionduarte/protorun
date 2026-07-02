@@ -302,7 +302,36 @@ production requirement).
 
 ---
 
-## Phase 3 — transport: TLS hook, Address migration, QUIC (v0.5.0)
+## Phase 3 — transport: TLS hook, Address migration, QUIC (v0.5.0) — done
+
+Delivered: `transport.Layer` now addresses peers by `transport.Address`
+(methods, `Message.Peer`, `Event.Peer()`), with the SessionLayer as the
+sole translation point between transport `Address`es and the logical
+`Host`s protocols see — the `Sessions` seam and the runtime stay
+Host-based and unchanged, and the retry table needed no changes. `Host`
+remains the ip:port endpoint type both backends use, and the Hello still
+carries the dialer's logical `Host` unchanged on the wire. `NewTCPLayer`
+grows functional options: `WithDialFunc`, `WithListenFunc`, and
+`WithTLS(cfg)` (sugar over `tls.Dialer` / `tls.Listen`), forwarded through
+`WithTCPTransport(ctx, topts...)` so TLS/mTLS is a one-liner; how-to in
+`docs/how-to-tls.md`. New nested module `transport/quic`
+(`quic.NewLayer` on `quic-go`, one connection + one bidirectional stream
+per peer, identical framing and `LayerIdentifier` byte, distinct
+`protorun` ALPN, `quic.DevTLS` for tests) runs the SessionLayer unchanged
+on top. Tests: TLS + mTLS TCP handshake, dial/listen hooks, and
+layer/session/two-runtime QUIC suites (goleak-clean).
+
+The `transport.Layer` + `Address` abstraction **held** for QUIC without
+bending: QUIC slotted in behind the same interface, and the SessionLayer
+ran byte-for-byte unchanged. Two honest caveats surfaced. (1) Event
+structs keep an unexported `peer`, so out-of-module backends needed new
+`transport.NewConnected/NewDisconnected/NewFailed` constructors — a gap in
+the seam, now filled. (2) QUIC streams are announced by their first write,
+so the acceptor surfaces `Connected` only once the dialer sends its first
+frame (the Hello), a slightly later moment than TCP's accept-time
+`Connected`. This is invisible to the SessionLayer (the server does
+nothing between `Connected` and the Hello) but it is a real behavioral
+difference in the raw `Layer` contract, documented in the QUIC package.
 
 ### 3.1 Finish the Address migration
 

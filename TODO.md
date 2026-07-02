@@ -6,9 +6,6 @@ Everything below v1.0 may break API and wire format.
 
 ## Pending (see docs/roadmap.md for designs)
 
-- [ ] Phase 3 (v0.5.0): `Address` migration for `transport.Layer`
-      (was pending here already), dial/listen hooks +
-      `transport.WithTLS`, `transport/quic` nested module.
 - [ ] Phase 4 (v0.6.0): prototest deterministic simulation — mesh
       fault injection (cut/heal/loss/delay), seeded schedules,
       virtual time via `FakeClock`, `prototest.Sim` harness.
@@ -22,6 +19,16 @@ Everything below v1.0 may break API and wire format.
 
 ## Done
 
+- [x] Phase 3 (v0.5.0): transport — `transport.Layer` addressed by
+      `transport.Address` (`Message.Peer`/`Event.Peer()`), SessionLayer
+      the sole `Address`→logical-`Host` translation point (`Sessions`
+      seam + retry table unchanged, Hello unchanged on the wire);
+      `NewTCPLayer` dial/listen hooks (`WithDialFunc`/`WithListenFunc`)
+      and `WithTLS` sugar forwarded through `WithTCPTransport`;
+      `transport/quic` nested module (`quic.NewLayer` on `quic-go`, one
+      conn + one bidi stream per peer, same framing, `protorun` ALPN,
+      `quic.DevTLS`); TLS/mTLS + hooks + QUIC layer/session/two-runtime
+      tests; `docs/how-to-tls.md`.
 - [x] Phase 2 (v0.4.0): codec ergonomics — `WireCodec[M]` reflective
       default codec (cached per-type plan; strings/`[]byte`/slices/maps/
       arrays/nested-structs/pointers; deterministic sorted-key maps;
@@ -110,7 +117,9 @@ Everything below v1.0 may break API and wire format.
   membership in `cmd/gossip` is enough for framework validation.
 - Plumtree / lazy-push spanning-tree gossip. Eager push is the
   right baseline.
-- Wire-level TLS / authentication. Out of scope for the framework
-  itself; layer it on top.
-- Connection-pool / multiplexing. One TCP conn per peer pair is
-  fine for protorun's scope.
+- Wire-level TLS / authentication is not baked into the *protocol*
+  layer, but Phase 3 added the seam: `transport.WithTLS` (and the
+  QUIC backend, where TLS is mandatory) make "layer it on" a
+  one-liner rather than a fork.
+- Connection-pool / multiplexing. One connection per peer pair (TCP
+  or QUIC) is fine for protorun's scope.

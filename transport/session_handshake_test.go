@@ -45,7 +45,7 @@ func TestSessionLayer_RejectsMismatchedHello(t *testing.T) {
 	hello.WriteByte(byte(HandshakeHello))
 	hello.WriteByte(ProtocolVersion + 1)
 	_ = WriteHost(hello, hClient)
-	msg := serializeMessage(SessionMessage{host: hServer, layer: Session, Msg: *hello})
+	msg := frameFor(Session, *hello, hServer)
 	tcpClient.Send(msg, hServer)
 
 	ev := waitSessionEvent(t, sServer.OutChannelEvents(), 5*time.Second)
@@ -63,11 +63,11 @@ func TestSessionLayer_RejectsMismatchedHello(t *testing.T) {
 	// The dialer must learn why: a Reject with the server's version.
 	select {
 	case raw := <-tcpClient.OutChannel():
-		sm := deserializeMessage(raw)
-		if sm.layer != Session {
-			t.Fatalf("expected a session-layer frame, got layer=%d", sm.layer)
+		layer, body := splitFrame(raw)
+		if layer != Session {
+			t.Fatalf("expected a session-layer frame, got layer=%d", layer)
 		}
-		p, err := parseHandshakePayload(&sm.Msg)
+		p, err := parseHandshakePayload(&body)
 		if err != nil {
 			t.Fatalf("parseHandshakePayload: %v", err)
 		}
@@ -105,13 +105,13 @@ func TestSessionLayer_DialRejected_EmitsVersionMismatch(t *testing.T) {
 	// The raw server waits for the client's Hello and answers Reject.
 	select {
 	case raw := <-tcpServer.OutChannel():
-		sm := deserializeMessage(raw)
-		p, err := parseHandshakePayload(&sm.Msg)
+		_, body := splitFrame(raw)
+		p, err := parseHandshakePayload(&body)
 		if err != nil || p.typ != HandshakeHello {
 			t.Fatalf("expected a Hello from the dialing client, got typ=%v err=%v", p.typ, err)
 		}
-		reject := serializeMessage(SessionMessage{host: raw.Host, layer: Session, Msg: encodeReject()})
-		tcpServer.Send(reject, raw.Host)
+		reject := frameFor(Session, encodeReject(), raw.Peer)
+		tcpServer.Send(reject, raw.Peer)
 	case <-time.After(5 * time.Second):
 		t.Fatalf("raw server never received the Hello")
 	}

@@ -22,7 +22,7 @@ func TestSessionLayer_UnknownLayerIdentifier(t *testing.T) {
 	// Construct a Message whose payload has an invalid LayerIdentifier.
 	payload := bytes.NewBuffer(nil)
 	payload.WriteByte(0xFF) // invalid layer
-	tcp.OutChannel() <- Message{Host: self, Msg: *payload}
+	tcp.OutChannel() <- Message{Peer: self, Msg: *payload}
 
 	// Let the session handler process the message; we only assert that it
 	// doesn't panic and doesn't emit any SessionEvent.

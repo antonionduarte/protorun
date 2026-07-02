@@ -9,7 +9,7 @@
 # with their own go.mod. go.work (tracked) ties them together for local
 # builds. Targets that must cover the whole repo loop over this list;
 # root-only helpers (run, bench, coverage gate) stay on the core module.
-MODULES := . codec/protobuf
+MODULES := . codec/protobuf transport/quic
 
 # -----------------------------------------------------------------------
 # Build / run

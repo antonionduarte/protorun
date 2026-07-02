@@ -779,10 +779,13 @@ func (r *Runtime) processMessage(buffer bytes.Buffer, from transport.Host) {
 // SessionLayer themselves.
 //
 // The supplied ctx becomes the parent for both layers' internal
-// goroutines.
-func WithTCPTransport(ctx context.Context) Option {
+// goroutines. Any transport.TCPOption is forwarded to the TCPLayer, so
+// TLS (and other dial/listen customization) is a one-liner:
+//
+//	protorun.WithTCPTransport(ctx, transport.WithTLS(cfg))
+func WithTCPTransport(ctx context.Context, topts ...transport.TCPOption) Option {
 	return func(r *Runtime) {
-		tcp := transport.NewTCPLayer(r.self, ctx, 0)
+		tcp := transport.NewTCPLayer(r.self, ctx, 0, topts...)
 		session := transport.NewSessionLayer(tcp, r.self, ctx, 0, 0)
 		r.networkLayer = tcp
 		r.sessionLayer = session

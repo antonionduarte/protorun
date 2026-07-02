@@ -114,10 +114,32 @@ eager-push gossip protocol.
 +-----------------+------------------------------------+
                   |
 +-----------------v------------------------------------+
-| TransportLayer (TCP today; pluggable interface)      |
+| TransportLayer (transport.Layer, addressed by        |
+| transport.Address)                                   |
 |  - length-prefixed framing                           |
+|  - TCP (reference) with optional TLS/mTLS, or QUIC    |
+|    (transport/quic module) — SessionLayer runs        |
+|    unchanged over either                             |
 +------------------------------------------------------+
 ```
+
+`transport.Layer` addresses peers by the abstract `transport.Address`;
+`Host` (ip:port) is the endpoint type both TCP and QUIC use. The
+SessionLayer is the single translation point between transport
+`Address`es and the stable logical `Host`s protocols see.
+
+TLS on the TCP layer is a one-liner — no fork:
+
+```go
+rt := protorun.New(self,
+    protorun.WithTCPTransport(ctx, transport.WithTLS(cfg)))
+```
+
+`transport.WithDialFunc` / `transport.WithListenFunc` expose the raw
+dial/listen seams for anything TLS sugar doesn't cover. The QUIC backend
+lives in the nested [`transport/quic`](transport/quic/) module (it pulls
+in `quic-go`; the core module stays zero-dependency) and is wired via
+`protorun.WithTransport(quicLayer, sessionLayer)`.
 
 ## Concepts
 
@@ -276,8 +298,10 @@ protocol; `Escalate` cancels the runtime and `Run` returns an
 - Pingpong example: [`cmd/pingpong/`](cmd/pingpong/)
 - Gossip example (membership + eager-push gossip + 10-node integration
   test): [`cmd/gossip/`](cmd/gossip/)
-- Wire format details: see the package doc on `transport` and
-  `wire`.
+- TLS / mTLS how-to: [`docs/how-to-tls.md`](docs/how-to-tls.md)
+- Wire format details: [`docs/wire-format.md`](docs/wire-format.md), plus
+  the package doc on `transport` and `wire`.
+- QUIC transport backend: [`transport/quic/`](transport/quic/)
 
 ## Build, test, lint
 

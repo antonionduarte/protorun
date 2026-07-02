@@ -3,6 +3,7 @@ package transport
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -23,6 +24,13 @@ type (
 		mutex             sync.Mutex
 		self              Host
 
+		// dial/listen are the pluggable endpoints. They default to plain
+		// TCP; WithDialFunc / WithListenFunc / WithTLS replace them so a
+		// caller can layer TLS (or any net.Conn/net.Listener) underneath
+		// the unchanged framing and handshake above.
+		dial   DialFunc
+		listen ListenFunc
+
 		listener   net.Listener
 		cancelFunc context.CancelFunc
 		ctx        context.Context
@@ -34,7 +42,72 @@ type (
 		host Host
 		msg  Message
 	}
+
+	// DialFunc opens a connection to addr on the given network. It
+	// receives the layer's context so a slow dial is cancelled on
+	// shutdown. The default is a net.Dialer; WithTLS swaps in a
+	// tls.Dialer.
+	DialFunc func(ctx context.Context, network, addr string) (net.Conn, error)
+
+	// ListenFunc opens a listener on addr for the given network. The
+	// default is net.Listen; WithTLS swaps in tls.Listen.
+	ListenFunc func(network, addr string) (net.Listener, error)
+
+	// TCPOption customizes a TCPLayer at construction time.
+	TCPOption func(*TCPLayer)
 )
+
+// WithDialFunc overrides how outbound connections are opened. Use it to
+// wrap connections (TLS, proxying, instrumentation) without forking the
+// layer. The framing and session handshake run unchanged on top.
+func WithDialFunc(f DialFunc) TCPOption {
+	return func(t *TCPLayer) {
+		if f != nil {
+			t.dial = f
+		}
+	}
+}
+
+// WithListenFunc overrides how the inbound listener is opened, mirroring
+// WithDialFunc for the accept side.
+func WithListenFunc(f ListenFunc) TCPOption {
+	return func(t *TCPLayer) {
+		if f != nil {
+			t.listen = f
+		}
+	}
+}
+
+// WithTLS is sugar that sets both the dial and listen functions to their
+// TLS equivalents (crypto/tls.Dialer and tls.Listen) using cfg. Framing
+// and the session handshake are untouched — TLS terminates below them.
+//
+// What cfg must carry depends on the side:
+//
+//   - Server (accepts connections): cfg.Certificates (or GetCertificate)
+//     must provide the server's certificate + key.
+//   - Client (dials out): cfg.RootCAs must trust the server's
+//     certificate chain, or cfg.InsecureSkipVerify = true for
+//     development against self-signed certs. cfg.ServerName should match
+//     the certificate when verification is on.
+//   - Mutual TLS: the server additionally sets cfg.ClientAuth (typically
+//     tls.RequireAndVerifyClientCert) and cfg.ClientCAs; the client
+//     additionally sets cfg.Certificates with its own client cert.
+//
+// A node that both dials and accepts (the usual peer-to-peer case)
+// supplies a cfg covering both roles. See docs/how-to-tls.md.
+func WithTLS(cfg *tls.Config) TCPOption {
+	return func(t *TCPLayer) {
+		if cfg == nil {
+			return
+		}
+		dialer := &tls.Dialer{Config: cfg}
+		t.dial = dialer.DialContext
+		t.listen = func(network, addr string) (net.Listener, error) {
+			return tls.Listen(network, addr, cfg)
+		}
+	}
+}
 
 // maxFrameSize is a safety limit for a single TCP frame payload.
 // Frames with a declared length larger than this are treated as protocol errors.
@@ -92,7 +165,7 @@ func decodeFrames(buf *bytes.Buffer) ([][]byte, error) {
 	}
 }
 
-func NewTCPLayer(self Host, ctx context.Context, outBuf int) *TCPLayer {
+func NewTCPLayer(self Host, ctx context.Context, outBuf int, opts ...TCPOption) *TCPLayer {
 	ctx, cancel := context.WithCancel(ctx)
 	logger := slog.Default().With("component", "transport", "transport", "tcp")
 	if outBuf <= 0 {
@@ -107,27 +180,67 @@ func NewTCPLayer(self Host, ctx context.Context, outBuf int) *TCPLayer {
 		connectChan:       make(chan Host),
 		disconnectChan:    make(chan Host),
 		self:              self,
+		dial:              defaultDial,
+		listen:            net.Listen,
 		ctx:               ctx,
 		cancelFunc:        cancel,
 		logger:            logger,
 	}
+	for _, opt := range opts {
+		opt(tcpLayer)
+	}
 
 	logger.Info("tcp layer starting", "self", self.String())
-	tcpLayer.listen()            // start listening
+	tcpLayer.startListen()       // start listening
 	go tcpLayer.handler()        // start main event loop
 	go tcpLayer.closeOnCtxDone() // ensure resources release on ctx cancel
 	return tcpLayer
 }
 
-func (t *TCPLayer) Send(msg Message, sendTo Host) {
-	t.logger.Debug("tcp send requested", "to", sendTo.String(), "bytes", msg.Msg.Len())
+// defaultDial is the plain-TCP dialer used unless WithDialFunc / WithTLS
+// override it.
+func defaultDial(ctx context.Context, network, addr string) (net.Conn, error) {
+	var d net.Dialer
+	return d.DialContext(ctx, network, addr)
+}
+
+// hostFromAddress narrows an Address to the concrete Host this backend
+// speaks. TCP only understands ip:port endpoints; an Address of any
+// other kind is a wiring error (a SessionLayer pointed at the wrong
+// backend), reported as a Failed event by the caller.
+func hostFromAddress(a Address) (Host, bool) {
+	switch v := a.(type) {
+	case Host:
+		return v, true
+	case *Host:
+		if v != nil {
+			return *v, true
+		}
+	}
+	return Host{}, false
+}
+
+func (t *TCPLayer) Send(msg Message, sendTo Address) {
+	host, ok := hostFromAddress(sendTo)
+	if !ok {
+		t.logger.Error("tcp send to non-Host address", "addr", sendTo.String())
+		t.emitFailed(sendTo)
+		return
+	}
+	t.logger.Debug("tcp send requested", "to", host.String(), "bytes", msg.Msg.Len())
 	select {
-	case t.sendChan <- TCPSendMessage{sendTo, msg}:
+	case t.sendChan <- TCPSendMessage{host, msg}:
 	case <-t.ctx.Done():
 	}
 }
 
-func (t *TCPLayer) Connect(host Host) {
+func (t *TCPLayer) Connect(peer Address) {
+	host, ok := hostFromAddress(peer)
+	if !ok {
+		t.logger.Error("tcp connect to non-Host address", "addr", peer.String())
+		t.emitFailed(peer)
+		return
+	}
 	t.logger.Debug("tcp connect requested", "to", host.String())
 	select {
 	case t.connectChan <- host:
@@ -135,10 +248,24 @@ func (t *TCPLayer) Connect(host Host) {
 	}
 }
 
-func (t *TCPLayer) Disconnect(host Host) {
+func (t *TCPLayer) Disconnect(peer Address) {
+	host, ok := hostFromAddress(peer)
+	if !ok {
+		t.logger.Error("tcp disconnect of non-Host address", "addr", peer.String())
+		return
+	}
 	t.logger.Debug("tcp disconnect requested", "host", host.String())
 	select {
 	case t.disconnectChan <- host:
+	case <-t.ctx.Done():
+	}
+}
+
+// emitFailed pushes a Failed event, bailing out on shutdown so a caller
+// can't block on a drained channel.
+func (t *TCPLayer) emitFailed(peer Address) {
+	select {
+	case t.outEvents <- &Failed{peer: peer}:
 	case <-t.ctx.Done():
 	}
 }
@@ -183,7 +310,7 @@ func (t *TCPLayer) send(networkMessage Message, sendTo Host) {
 	frame, err := encodeFrame(networkMessage.Msg.Bytes())
 	if err != nil {
 		t.logger.Error("tcp encode frame failed", "host", sendTo.String(), "err", err)
-		t.outEvents <- &Failed{host: sendTo}
+		t.outEvents <- &Failed{peer: sendTo}
 		// Call the internal disconnect directly: invoking the public
 		// Disconnect would try to push onto disconnectChan, which is
 		// drained by the handler goroutine that is currently inside this
@@ -195,7 +322,7 @@ func (t *TCPLayer) send(networkMessage Message, sendTo Host) {
 	}
 
 	if _, err := conn.Write(frame); err != nil {
-		t.outEvents <- &Failed{host: sendTo}
+		t.outEvents <- &Failed{peer: sendTo}
 		t.disconnect(sendTo)
 	}
 }
@@ -208,19 +335,19 @@ func (t *TCPLayer) disconnect(host Host) {
 	if conn != nil {
 		_ = conn.Close()
 	}
-	t.outEvents <- &Disconnected{host: host}
+	t.outEvents <- &Disconnected{peer: host}
 }
 
 func (t *TCPLayer) connect(host Host) {
-	conn, err := net.Dial("tcp", host.String())
+	conn, err := t.dial(t.ctx, "tcp", host.String())
 	if err != nil {
 		t.logger.Error("tcp connect failed", "host", host.String(), "err", err)
-		t.outEvents <- &Failed{host: host}
+		t.outEvents <- &Failed{peer: host}
 		return
 	}
 	t.logger.Info("tcp connect established", "host", host.String())
 	t.addActiveConn(conn, host)
-	t.outEvents <- &Connected{host: host}
+	t.outEvents <- &Connected{peer: host}
 
 	go t.connectionHandler(conn, host)
 }
@@ -240,8 +367,8 @@ func (t *TCPLayer) handler() {
 	}
 }
 
-func (t *TCPLayer) listen() {
-	ln, err := net.Listen("tcp", t.self.String())
+func (t *TCPLayer) startListen() {
+	ln, err := t.listen("tcp", t.self.String())
 	if err != nil {
 		t.logger.Error("tcp listen failed", "self", t.self.String(), "err", err)
 		return
@@ -271,16 +398,31 @@ func (t *TCPLayer) listenerHandler(listener net.Listener) {
 			// forbids it either.
 			continue
 		}
-		remote := conn.RemoteAddr().(*net.TCPAddr)
-		host := NewHost(remote.Port, remote.IP.String())
+		host, ok := remoteHost(conn)
+		if !ok {
+			t.logger.Error("tcp inbound connection with unexpected remote address type", "remote", conn.RemoteAddr())
+			_ = conn.Close()
+			continue
+		}
 
 		t.logger.Info("tcp inbound connection accepted", "remote", host.String())
 
 		t.addActiveConn(conn, host)
-		t.outEvents <- &Connected{host: host}
+		t.outEvents <- &Connected{peer: host}
 
 		go t.connectionHandler(conn, host)
 	}
+}
+
+// remoteHost extracts the peer Host from a connection's remote address.
+// With TLS in play conn is a *tls.Conn whose RemoteAddr still returns the
+// underlying *net.TCPAddr, so this works for both plain and TLS conns.
+func remoteHost(conn net.Conn) (Host, bool) {
+	addr, ok := conn.RemoteAddr().(*net.TCPAddr)
+	if !ok {
+		return Host{}, false
+	}
+	return NewHost(addr.Port, addr.IP.String()), true
 }
 
 func (t *TCPLayer) connectionHandler(conn net.Conn, host Host) {
@@ -303,7 +445,7 @@ func (t *TCPLayer) connectionHandler(conn net.Conn, host Host) {
 				data := make([]byte, len(frame))
 				copy(data, frame)
 				t.outChannel <- Message{
-					Host: host,
+					Peer: host,
 					Msg:  *bytes.NewBuffer(data),
 				}
 			}
@@ -338,7 +480,7 @@ func (t *TCPLayer) readFrames(conn net.Conn, readBuf []byte, recvBuf *bytes.Buff
 	frames, derr := decodeFrames(recvBuf)
 	if derr != nil {
 		t.logger.Error("tcp frame decode failed, disconnecting", "host", host.String(), "err", derr)
-		t.outEvents <- &Failed{host: host}
+		t.outEvents <- &Failed{peer: host}
 		return nil, derr
 	}
 	return frames, nil

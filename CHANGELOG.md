@@ -15,6 +15,27 @@ first-class testing package for protocol authors.
 
 ### Added
 
+- **Transport TLS and dial/listen hooks.** `NewTCPLayer` grows
+  functional options: `transport.WithDialFunc` /
+  `transport.WithListenFunc` expose the raw `net.Conn` / `net.Listener`
+  seams, and `transport.WithTLS(cfg)` is sugar that wires both to
+  `tls.Dialer` / `tls.Listen`. They are forwarded through
+  `protorun.WithTCPTransport(ctx, topts...)`, so TLS and mTLS are a
+  one-liner with no fork — the framing and Hello/Ack handshake are
+  byte-for-byte unchanged, TLS just terminates below them. How-to with
+  server-TLS and mTLS snippets in `docs/how-to-tls.md`. Out-of-tree
+  Layer backends get `transport.NewConnected/NewDisconnected/NewFailed`
+  constructors for the events whose `peer` field is unexported.
+- **QUIC transport backend (`transport/quic` nested module).**
+  `quic.NewLayer(self, ctx, tlsConf, ...)` implements `transport.Layer`
+  over `github.com/quic-go/quic-go`: one connection per peer pair, one
+  bidirectional stream, the exact same 4-byte length framing and
+  `LayerIdentifier` byte as TCP, so the SessionLayer and runtime run
+  unchanged on top. TLS is mandatory (QUIC has no cleartext mode) with a
+  distinct `protorun` ALPN; `quic.DevTLS()` mints a throwaway in-memory
+  self-signed config for tests/dev (not for production). Its own go.mod
+  + `replace`, tracked in `go.work`, Makefile `MODULES`, and CI — the
+  core module stays zero-dependency.
 - **Codec ergonomics.** `Handle(ctx, fn)` registers a message type and
   its handler in one call, inferring the type from the
   `func(*M, transport.Host)` signature and picking the codec: the
@@ -102,6 +123,19 @@ first-class testing package for protocol authors.
 
 ### Changed
 
+- **`transport.Layer` is addressed by `transport.Address`, not `Host`.**
+  `Connect`, `Disconnect`, and `Send` now take `transport.Address`;
+  `Message.Host`/`Event.Host()` became `Message.Peer`/`Event.Peer()`
+  (both `Address`). `Host` (ip:port) still implements `Address` and
+  remains the endpoint type TCP and QUIC use, but the interface no
+  longer hard-codes it — a custom backend can address peers by anything.
+  The SessionLayer is the single translation point between transport
+  `Address`es and the stable logical `Host`s protocols see: the
+  `protorun.Sessions` seam, the runtime, and the retry table stay
+  `Host`-based and unchanged, and the Hello still carries the dialer's
+  logical `Host` unchanged on the wire. As a byproduct the SessionLayer
+  now resolves inbound application messages to their logical `Host`
+  (previously it surfaced the raw transport endpoint).
 - **Timer API redesigned around handles.** `ctx.After(d, fn)` and
   `ctx.Every(d, fn)` replace the old `Timer`/`TimerID` surface. Both
   return a `TimerHandle` with an idempotent `Cancel` that is safe

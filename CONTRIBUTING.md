@@ -45,9 +45,10 @@ GOSSIP_SCALE_10K=1 go test -run TestGossip_10000Nodes_Scale -timeout 10m ./cmd/g
 The repo is a Go workspace. The core module (`.`) is deliberately
 **zero-dependency** (stdlib only) — that is a load-bearing property, so
 anything needing a third-party dependency goes in a nested module with
-its own `go.mod`. Today that is `codec/protobuf`
-(`ProtoCodec[M proto.Message]`), which requires
-`google.golang.org/protobuf`.
+its own `go.mod`. Today those are `codec/protobuf`
+(`ProtoCodec[M proto.Message]`, requiring `google.golang.org/protobuf`)
+and `transport/quic` (`quic.NewLayer`, requiring
+`github.com/quic-go/quic-go`).
 
 `go.work` at the repo root ties the modules together and is **tracked in
 git** (only `go.work.sum` is ignored): this repo *is* the workspace, so

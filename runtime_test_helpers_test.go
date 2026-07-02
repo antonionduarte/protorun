@@ -63,12 +63,12 @@ func NewMockNetworkLayer() *MockNetworkLayer {
 	}
 }
 
-func (m *MockNetworkLayer) Connect(_ transport.Host)                   { m.ConnectCalled = true }
-func (m *MockNetworkLayer) Disconnect(_ transport.Host)                { m.DisconnectCalled = true }
-func (m *MockNetworkLayer) Send(_ transport.Message, _ transport.Host) { m.SendCalled = true }
-func (m *MockNetworkLayer) OutChannel() chan transport.Message         { return m.outChannel }
-func (m *MockNetworkLayer) OutEvents() chan transport.Event            { return m.outEvents }
-func (m *MockNetworkLayer) Cancel()                                    { m.CancelCalled = true }
+func (m *MockNetworkLayer) Connect(_ transport.Address)                   { m.ConnectCalled = true }
+func (m *MockNetworkLayer) Disconnect(_ transport.Address)                { m.DisconnectCalled = true }
+func (m *MockNetworkLayer) Send(_ transport.Message, _ transport.Address) { m.SendCalled = true }
+func (m *MockNetworkLayer) OutChannel() chan transport.Message            { return m.outChannel }
+func (m *MockNetworkLayer) OutEvents() chan transport.Event               { return m.outEvents }
+func (m *MockNetworkLayer) Cancel()                                       { m.CancelCalled = true }
 
 // localMessage is the canonical test message: just a sender, no payload.
 // It uses BaseMessage so Sender/SetSender are inherited.
