@@ -32,7 +32,7 @@ first-class testing package for protocol authors.
   `*transport.SessionLayer` is the production adapter and
   `WithTransport` accepts any adapter. `Runtime.Start()` is exported
   for callers that own their lifecycle.
-- **`pkg/prototest`.** In-memory mesh (no wire, no handshake,
+- **`prototest`.** In-memory mesh (no wire, no handshake,
   deterministic in-process delivery) implementing `Sessions`, plus a
   `NewRuntime` fixture: protocol authors can test full runtimes
   without TCP or port management.
@@ -42,6 +42,11 @@ first-class testing package for protocol authors.
 
 ### Changed
 
+- **Module renamed to `github.com/antonionduarte/protorun`.**
+  Previously `github.com/antonionduarte/go-simple-protocol-runtime`.
+  `pkg/protorun` is promoted to the module root, and `pkg/transport`,
+  `pkg/wire`, `pkg/prototest` move to `transport/`, `wire/`,
+  `prototest/`. Import paths change accordingly; no behavior change.
 - **`SessionConnected` is truthful on the dialing side.** The client
   FSM waits for the server's Ack before marking the session
   Established and emitting `SessionConnected` (previously it emitted
@@ -80,7 +85,7 @@ multi-layer example (membership + eager-push gossip with a
 - **Type-safe message dispatch.** Wire IDs derived from Go type
   names (FNV-1a) with `WireName()` opt-in to freeze the ID across
   renames. Generic `RegisterCodec[*M]`, `RegisterHandler[*M]`,
-  `BinaryCodec[*M]` for fixed-size structs, `pkg/wire` for
+  `BinaryCodec[*M]` for fixed-size structs, `wire` for
   variable-length encoding.
 - **TCP transport with handshake.** `WithTCPTransport(ctx)` wires a
   TCPLayer + SessionLayer. Hello/Ack handshake binds ephemeral

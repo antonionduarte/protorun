@@ -18,10 +18,10 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/antonionduarte/go-simple-protocol-runtime/cmd/gossip/gossip"
-	"github.com/antonionduarte/go-simple-protocol-runtime/cmd/gossip/membership"
-	"github.com/antonionduarte/go-simple-protocol-runtime/pkg/protorun"
-	"github.com/antonionduarte/go-simple-protocol-runtime/pkg/transport"
+	"github.com/antonionduarte/protorun"
+	"github.com/antonionduarte/protorun/cmd/gossip/gossip"
+	"github.com/antonionduarte/protorun/cmd/gossip/membership"
+	"github.com/antonionduarte/protorun/transport"
 )
 
 // portList is a flag.Value that accumulates -contact-port flags into a slice.

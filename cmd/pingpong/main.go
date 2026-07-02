@@ -5,10 +5,10 @@ import (
 	"flag"
 	"log/slog"
 
-	rtconfig "github.com/antonionduarte/go-simple-protocol-runtime/cmd/pingpong/config"
-	"github.com/antonionduarte/go-simple-protocol-runtime/cmd/pingpong/protocol"
-	"github.com/antonionduarte/go-simple-protocol-runtime/pkg/protorun"
-	"github.com/antonionduarte/go-simple-protocol-runtime/pkg/transport"
+	"github.com/antonionduarte/protorun"
+	rtconfig "github.com/antonionduarte/protorun/cmd/pingpong/config"
+	"github.com/antonionduarte/protorun/cmd/pingpong/protocol"
+	"github.com/antonionduarte/protorun/transport"
 )
 
 func main() {

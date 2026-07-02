@@ -1,22 +1,33 @@
 # TODO
 
-Mostly historical: the framework is at the point where the remaining
-work is feature-additive rather than foundational. Most checked items
-were completed during the polish passes leading up to v0.1.0.
+Pre-launch roadmap lives in [`docs/roadmap.md`](docs/roadmap.md):
+full design-level plans, phase by phase, each ending in a tag.
+Everything below v1.0 may break API and wire format.
 
-## Pending
+## Pending (see docs/roadmap.md for designs)
 
-- [ ] Migrate `transport.Layer` and downstream APIs to take
-      `Address` instead of `Host`. The interface exists (so users
-      can declare custom address types), but the concrete Layer
-      methods still take Host. Will land once a real non-TCP
-      backend (UDP / in-memory mesh / QUIC) needs the abstraction.
-- [ ] Configuration file parser at the runtime level (per-protocol
-      config). The pingpong example has YAML for logging only.
-- [ ] Better diagnostics: net-layer wrapper errors, louder
-      "protocol not registered for received wireID" warnings,
-      louder error when a runtime starts without a network layer
-      registered (already returns `ErrNoNetworkLayer`).
+- [ ] Phase 0 (v0.2.0): module rename to `protorun`, unified
+      per-protocol mailbox with overflow policy, handle-based timer
+      API (`ctx.After`/`ctx.Every`), `Clock` seam.
+- [ ] Phase 1 (v0.3.0): supervision — factory registration, panic
+      directives (Resume/Restart/Stop/Escalate), restart with
+      session replay, restart budget + backoff.
+- [ ] Phase 2 (v0.4.0): `WireCodec[M]` reflective codec for
+      variable-length messages, `Handle` one-line registration,
+      `codec/protobuf` nested module, `JSONCodec`.
+- [ ] Phase 3 (v0.5.0): `Address` migration for `transport.Layer`
+      (was pending here already), dial/listen hooks +
+      `transport.WithTLS`, `transport/quic` nested module.
+- [ ] Phase 4 (v0.6.0): prototest deterministic simulation — mesh
+      fault injection (cut/heal/loss/delay), seeded schedules,
+      virtual time via `FakeClock`, `prototest.Sim` harness.
+- [ ] Phase 5 (v0.7.0): protocol library — `protocols/membership`
+      IPC contract, `protocols/hyparview`, `protocols/plumtree`,
+      sim-based convergence/churn/partition suites.
+- [ ] Phase 6 (v0.8.0+): `config` + `otel` nested modules,
+      published benchmarks, Diátaxis docs set, README
+      repositioning, diagnostics polish (unknown-wireID warnings,
+      Send error-semantics callout), v1.0 freeze.
 
 ## Done
 
@@ -28,7 +39,7 @@ were completed during the polish passes leading up to v0.1.0.
 - [x] `Sessions` seam: the runtime holds its session stack behind
       `protorun.Sessions`; `*transport.SessionLayer` is the
       production adapter.
-- [x] `pkg/prototest`: exported in-memory mesh + runtime fixture so
+- [x] `prototest`: exported in-memory mesh + runtime fixture so
       protocol authors can test protocols without TCP.
 - [x] Basic structure (Protocol, Runtime, ProtocolContext).
 - [x] TCP transport layer with length-prefixed framing.
@@ -37,7 +48,7 @@ were completed during the polish passes leading up to v0.1.0.
 - [x] Type-hashed message dispatch via `WireID[T]` (FNV-1a on Go
       type name; opt-in `WireName()` override for rename-safety).
 - [x] Generic typed handlers (`RegisterHandler[*M]`).
-- [x] BinaryCodec for fixed-size messages; `pkg/wire` helpers for
+- [x] BinaryCodec for fixed-size messages; `wire` helpers for
       variable-length.
 - [x] Per-protocol event-loop concurrency.
 - [x] Timer system: `SetupTimer`, `SetupPeriodicTimer`,

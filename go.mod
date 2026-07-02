@@ -1,4 +1,4 @@
-module github.com/antonionduarte/go-simple-protocol-runtime
+module github.com/antonionduarte/protorun
 
 go 1.26
 

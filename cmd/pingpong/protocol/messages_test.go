@@ -3,7 +3,7 @@ package protocol
 import (
 	"testing"
 
-	"github.com/antonionduarte/go-simple-protocol-runtime/pkg/protorun"
+	"github.com/antonionduarte/protorun"
 )
 
 // Pingpong uses protorun.BinaryCodec for its messages. BaseMessage is

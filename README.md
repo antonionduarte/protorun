@@ -33,8 +33,8 @@ import (
     "context"
     "log/slog"
 
-    "github.com/antonionduarte/go-simple-protocol-runtime/pkg/protorun"
-    "github.com/antonionduarte/go-simple-protocol-runtime/pkg/transport"
+    "github.com/antonionduarte/protorun"
+    "github.com/antonionduarte/protorun/transport"
 )
 
 type PingMessage struct {
@@ -145,7 +145,7 @@ ID.
 
 `BinaryCodec[*M]` works for fixed-size messages (`encoding/binary` rules
 apply). For variable-length payloads, write a custom `Codec[*M]` on top of
-the helpers in `pkg/wire` (`WriteUint64`, `ReadBytes`, etc.).
+the helpers in `wire` (`WriteUint64`, `ReadBytes`, etc.).
 
 ### Inter-protocol coordination (IPC)
 
@@ -184,12 +184,12 @@ to ask the gossip protocol to broadcast.
 
 ## Documentation
 
-- Full API reference: `go doc github.com/antonionduarte/go-simple-protocol-runtime/pkg/protorun`
+- Full API reference: `go doc github.com/antonionduarte/protorun`
 - Pingpong example: [`cmd/pingpong/`](cmd/pingpong/)
 - Gossip example (membership + eager-push gossip + 10-node integration
   test): [`cmd/gossip/`](cmd/gossip/)
-- Wire format details: see the package doc on `pkg/transport` and
-  `pkg/wire`.
+- Wire format details: see the package doc on `transport` and
+  `wire`.
 
 ## Build, test, lint
 

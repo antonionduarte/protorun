@@ -9,8 +9,8 @@ conventions. Here's what to know before you open a PR.
 Go 1.26+. No system dependencies beyond a Go toolchain.
 
 ```bash
-git clone https://github.com/antonionduarte/go-simple-protocol-runtime
-cd go-simple-protocol-runtime
+git clone https://github.com/antonionduarte/protorun
+cd protorun
 make tools-install   # installs govulncheck; prints golangci-lint hint
 make hooks-install   # installs the pre-commit hook (lint + tests on staged Go)
 ```
@@ -24,12 +24,13 @@ make test-race       # go test -race ./...
 make lint            # golangci-lint run ./..., must report 0 issues
 make modernize-check # gopls modernize analyzer, should report nothing
 make coverage        # go test -coverprofile=coverage.out + summary
+make deadcode        # golang.org/x/tools/cmd/deadcode, should report nothing
 ```
 
 Run a single test:
 
 ```bash
-go test -race ./pkg/protorun -run TestIPC_RequestReply_HappyPath
+go test -race . -run TestIPC_RequestReply_HappyPath
 ```
 
 The 10k-node scale probe is gated behind an env var because it's slow and
@@ -76,7 +77,7 @@ attribute formats it as `ip:port` automatically.
 ### Tests
 
 - Use `goleak.VerifyTestMain` in `TestMain` so leaked goroutines fail
-  loudly. Existing `pkg/protorun/main_test.go` and
+  loudly. Existing `main_test.go` (root package) and
   `cmd/gossip/main_test.go` are the templates.
 - Run new code under `-race`. The CI workflow already does this on every
   PR.

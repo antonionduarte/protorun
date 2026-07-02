@@ -16,8 +16,8 @@
 package membership
 
 import (
-	"github.com/antonionduarte/go-simple-protocol-runtime/pkg/protorun"
-	"github.com/antonionduarte/go-simple-protocol-runtime/pkg/transport"
+	"github.com/antonionduarte/protorun"
+	"github.com/antonionduarte/protorun/transport"
 )
 
 // GetView is sent by a peer protocol to fetch a snapshot of the

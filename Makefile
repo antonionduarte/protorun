@@ -1,7 +1,7 @@
 .PHONY: build test test-race run bench \
 	lint lint-fix lint-new \
 	modernize modernize-check \
-	coverage vulncheck \
+	coverage vulncheck deadcode \
 	tools-install hooks-install
 
 # -----------------------------------------------------------------------
@@ -26,7 +26,7 @@ run:
 	  -self-port 5001 -peer-port 5002
 
 # -----------------------------------------------------------------------
-# Code quality — lint, coverage, vulnerability scan
+# Code quality — lint, coverage, vulnerability scan, dead code
 #
 # Thresholds in .golangci.yml are anchored on Go-community conventions
 # (gocyclo/cyclop/gocognit/funlen/lll/dupl defaults and Uber Go Style
@@ -50,6 +50,9 @@ coverage:
 
 vulncheck:
 	go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+deadcode:
+	go run golang.org/x/tools/cmd/deadcode@latest -test ./...
 
 # Apply gopls' modernize fixes in place (sync.WaitGroup.Go, range-over-int,
 # t.Context(), maps/slices helpers, etc.). Idempotent — safe to re-run.

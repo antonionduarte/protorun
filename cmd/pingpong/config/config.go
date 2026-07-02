@@ -12,7 +12,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/antonionduarte/go-simple-protocol-runtime/pkg/protorun"
+	"github.com/antonionduarte/protorun"
 )
 
 // HostConfig is a simple host (ip:port) specification used in pingpong's

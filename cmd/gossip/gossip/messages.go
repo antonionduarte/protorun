@@ -6,8 +6,8 @@ import (
 	"bytes"
 	"fmt"
 
-	"github.com/antonionduarte/go-simple-protocol-runtime/pkg/protorun"
-	"github.com/antonionduarte/go-simple-protocol-runtime/pkg/wire"
+	"github.com/antonionduarte/protorun"
+	"github.com/antonionduarte/protorun/wire"
 )
 
 // Message is a single gossip envelope: an ID for deduplication, plus

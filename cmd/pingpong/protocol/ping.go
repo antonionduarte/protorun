@@ -3,8 +3,8 @@ package protocol
 import (
 	"log/slog"
 
-	"github.com/antonionduarte/go-simple-protocol-runtime/pkg/protorun"
-	"github.com/antonionduarte/go-simple-protocol-runtime/pkg/transport"
+	"github.com/antonionduarte/protorun"
+	"github.com/antonionduarte/protorun/transport"
 )
 
 type PingPongProtocol struct {
