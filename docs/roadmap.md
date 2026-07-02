@@ -459,7 +459,31 @@ controlled — but for protocols that follow the authoring contract
 
 ---
 
-## Phase 5 — protocol library (v0.7.0)
+## Phase 5 — protocol library (v0.7.0) — done
+
+Delivered: three zero-dependency packages under `/protocols`.
+`protocols/membership` is the interchangeability seam — a types-only IPC
+contract (`GetView`/`View{Active}`, `NeighborUp`/`NeighborDown`) with no
+codecs or WireName because IPC is local-only. `protocols/hyparview` is a
+faithful HyParView (active/passive views, JOIN + ForwardJoin ARWL/PRWL
+walks, periodic Shuffle, Neighbor promotion with the paper's priority
+rule, session-layer failure detection) publishing the contract.
+`protocols/plumtree` is a faithful Plumtree over the contract (eager/lazy
+sets from NeighborUp/Down, batched IHAVE, GRAFT/PRUNE tree repair,
+sender+seq message ids, bounded GRAFT cache). Every wire message
+implements `WireName()` and a `SelfMarshaler` codec (Host's int port rules
+out `WireCodec`). Primary suites are Sim-based: 20-node HyParView
+convergence + churn + shuffle-rotation, and 20-node Plumtree broadcast
+(exactly-once + bounded-duplicate spanning-tree convergence) +
+partition/heal, all seeded and sub-5s wall time under `-race -count=5`,
+plus pure-logic unit tests. `cmd/gossip` now consumes the contract (its
+static membership is the simplest contract *implementation*, a pedagogical
+baseline); its integration + scale tests are unchanged. `cmd/broadcast` is
+the new flagship: Plumtree over HyParView over TCP, stdin in / Delivered
+out, with a real-TCP integration test on the 7400+ port band.
+
+The shuffle open question is resolved as option (a) — see the resolved
+bullet in Open questions below.
 
 Babel's pull was never just the runtime; it was the protocol
 implementations around it. Ship batteries under `/protocols`,
@@ -568,7 +592,14 @@ QUIC needs the Address migration.
   is it an attractive nuisance? (Lean: ship it, strict-mode warn.)
 - Phase 4: expose the Sim step hook as a full event-trace recorder
   (for visualization) or keep it minimal? (Lean: minimal at launch.)
-- Phase 5: HyParView shuffle over TCP sessions opens short-lived
-  connections to passive peers — allow transient sessions in the
-  session layer, or route shuffles through active view only?
-  (Needs a spike; Babel allows transient channels.)
+- Phase 5 (RESOLVED — option (a), route through the active view):
+  HyParView shuffles are routed entirely over active-view links; no
+  transient sessions to passive peers are opened. The Shuffle request is
+  a TTL random walk over active views exactly as in the paper, and the
+  reply retraces the walk's recorded path hop-by-hop back to the origin
+  — so both request and reply travel only over existing active-view
+  sessions. A session to a passive peer is opened only during promotion,
+  which is legitimate because that peer is *becoming* an active-view
+  member. This needs no session-layer change (transient sessions were the
+  alternative), which is why (a) was preferred. See the package doc on
+  `protocols/hyparview` for the mechanism.

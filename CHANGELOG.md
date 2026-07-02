@@ -15,6 +15,48 @@ first-class testing package for protocol authors.
 
 ### Added
 
+- **Protocol library (`protocols/`, Phase 5).** Three zero-dependency
+  packages in the core module. `protocols/membership` is the
+  interchangeability seam: a types-only IPC contract — `GetView` /
+  `View{Active}` (request/reply) and `NeighborUp` / `NeighborDown`
+  (notifications). It carries no codecs and no `WireName` on purpose:
+  IPC is local-only, so the contract never touches the wire. Any
+  dissemination protocol written against it runs over any membership
+  protocol that publishes it. `protocols/hyparview` is a faithful
+  HyParView (Leitão/Pereira/Rodrigues 2007): small symmetric
+  session-backed active view + larger passive view, JOIN via contact,
+  ForwardJoin ARWL/PRWL random walks, periodic Shuffle, Neighbor
+  promotion on active-view failure with the paper's empty-view priority
+  rule, and failure detection off the session layer (`OnSessionDisconnected`
+  / `OnSessionGivenUp`) with no extra heartbeats. Shuffles are routed
+  entirely over active-view links — the request is a TTL walk over active
+  views and the reply retraces the walk's recorded path back to the
+  origin — so no transient sessions to passive peers are ever opened
+  (resolving the roadmap's Phase 5 open question). `protocols/plumtree`
+  is a faithful Plumtree ("Epidemic Broadcast Trees", 2007) over the
+  contract: eager-push tree links + lazy-push IHAVE announcements
+  (batched), duplicate-triggered PRUNE and missing-message-timer GRAFT
+  tree repair, sender+seq message ids, and a bounded GRAFT cache
+  (`Config.CacheSize`; long partitions beyond the cache are the app's
+  problem, by design). Public surface mirrors the gossip example's
+  trigger pattern: a `Broadcast` request plus a `Delivered{ID, Payload,
+  From}` notification. Every wire message implements `WireName()` and a
+  `SelfMarshaler` codec (a `transport.Host`'s platform-int port rules out
+  the reflective `WireCodec`). Both protocols expose a `Config` with
+  sane zero-value defaults. Primary test suites run on `prototest.Sim`:
+  20-node HyParView convergence / churn / shuffle-rotation and 20-node
+  Plumtree exactly-once broadcast / spanning-tree duplicate-bound /
+  partition-heal, seeded and sub-5s wall time under `-race -count=5`,
+  plus pure-logic unit tests. Story in `docs/protocols.md`.
+- **`cmd/gossip` rewritten onto the contract; new `cmd/broadcast`.**
+  The gossip example's membership protocol now implements
+  `protocols/membership` (a static contact list is the simplest possible
+  contract *implementation* — a pedagogical baseline), and its eager-push
+  gossip subscribes to `NeighborUp`/`NeighborDown` instead of private
+  wiring; the 10-node integration and 100/1000-node scale tests are
+  unchanged. `cmd/broadcast` is the flagship demo: Plumtree over
+  HyParView over TCP, stdin lines broadcast to the cluster and Delivered
+  lines printed, with a real-TCP integration test on the 7400+ port band.
 - **Transport TLS and dial/listen hooks.** `NewTCPLayer` grows
   functional options: `transport.WithDialFunc` /
   `transport.WithListenFunc` expose the raw `net.Conn` / `net.Listener`

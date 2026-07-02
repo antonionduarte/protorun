@@ -11,7 +11,8 @@ import (
 
 	"github.com/antonionduarte/protorun"
 	"github.com/antonionduarte/protorun/cmd/gossip/gossip"
-	"github.com/antonionduarte/protorun/cmd/gossip/membership"
+	staticmembership "github.com/antonionduarte/protorun/cmd/gossip/membership"
+	"github.com/antonionduarte/protorun/protocols/membership"
 	"github.com/antonionduarte/protorun/transport"
 )
 
@@ -61,15 +62,15 @@ type viewWatcher struct {
 }
 
 func (w *viewWatcher) Start(ctx protorun.ProtocolContext) {
-	protorun.SubscribeNotification(ctx, func(ev membership.ViewChanged) {
+	protorun.SubscribeNotification(ctx, func(membership.NeighborUp) {
 		w.mu.Lock()
-		defer w.mu.Unlock()
-		switch {
-		case ev.HasAdded:
-			w.size++
-		case ev.HasRemoved:
-			w.size--
-		}
+		w.size++
+		w.mu.Unlock()
+	})
+	protorun.SubscribeNotification(ctx, func(membership.NeighborDown) {
+		w.mu.Lock()
+		w.size--
+		w.mu.Unlock()
 	})
 }
 
@@ -145,7 +146,7 @@ func buildNodeOf(t *testing.T, basePort, i, total int) *node {
 	rec := newRecorder()
 	watcher := &viewWatcher{}
 	trigger := &triggerer{}
-	m := membership.New(contacts)
+	m := staticmembership.New(contacts)
 	g := gossip.New(rec.record)
 
 	rt := protorun.New(self, protorun.WithTCPTransport(context.Background()))

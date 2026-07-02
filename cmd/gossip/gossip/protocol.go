@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/antonionduarte/protorun"
-	"github.com/antonionduarte/protorun/cmd/gossip/membership"
+	"github.com/antonionduarte/protorun/protocols/membership"
 	"github.com/antonionduarte/protorun/transport"
 )
 
@@ -81,7 +81,8 @@ type BroadcastAck struct {
 func (p *Protocol) Start(ctx protorun.ProtocolContext) {
 	p.ctx = ctx
 	protorun.Handle(ctx, p.handleInbound)
-	protorun.SubscribeNotification(ctx, p.handleViewChanged)
+	protorun.SubscribeNotification(ctx, p.onNeighborUp)
+	protorun.SubscribeNotification(ctx, p.onNeighborDown)
 	protorun.RegisterRequestHandler(ctx, p.handleBroadcast)
 }
 
@@ -135,18 +136,17 @@ func (p *Protocol) handleInitialView(rep *membership.View, err error) {
 		p.ctx.Logger().Error("initial GetView failed", "err", err)
 		return
 	}
-	p.view = rep.Peers
+	p.view = rep.Active
 }
 
-func (p *Protocol) handleViewChanged(ev membership.ViewChanged) {
-	switch {
-	case ev.HasAdded:
-		if !slices.ContainsFunc(p.view, sameHost(ev.Added)) {
-			p.view = append(p.view, ev.Added)
-		}
-	case ev.HasRemoved:
-		p.view = slices.DeleteFunc(p.view, sameHost(ev.Removed))
+func (p *Protocol) onNeighborUp(ev membership.NeighborUp) {
+	if !slices.ContainsFunc(p.view, sameHost(ev.Peer)) {
+		p.view = append(p.view, ev.Peer)
 	}
+}
+
+func (p *Protocol) onNeighborDown(ev membership.NeighborDown) {
+	p.view = slices.DeleteFunc(p.view, sameHost(ev.Peer))
 }
 
 // fanout sends msg to each peer. Errors are logged and otherwise

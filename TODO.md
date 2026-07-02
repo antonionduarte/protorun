@@ -6,9 +6,6 @@ Everything below v1.0 may break API and wire format.
 
 ## Pending (see docs/roadmap.md for designs)
 
-- [ ] Phase 5 (v0.7.0): protocol library — `protocols/membership`
-      IPC contract, `protocols/hyparview`, `protocols/plumtree`,
-      sim-based convergence/churn/partition suites.
 - [ ] Phase 6 (v0.8.0+): `config` + `otel` nested modules,
       published benchmarks, Diátaxis docs set, README
       repositioning, diagnostics polish (unknown-wireID warnings,
@@ -16,6 +13,24 @@ Everything below v1.0 may break API and wire format.
 
 ## Done
 
+- [x] Phase 5 (v0.7.0): protocol library under `/protocols` (all
+      zero-dependency, in the core module). `protocols/membership`:
+      types-only IPC contract (`GetView`/`View{Active}`, `NeighborUp`/
+      `NeighborDown`) — the interchangeability seam, no codecs/WireName
+      (IPC is local-only). `protocols/hyparview`: faithful HyParView
+      (active/passive views, JOIN, ForwardJoin ARWL/PRWL walks, periodic
+      Shuffle routed over active links with a path-retracing reply — no
+      transient sessions, resolving the roadmap open question — Neighbor
+      promotion with the empty-view priority rule, session-layer failure
+      detection). `protocols/plumtree`: faithful Plumtree over the
+      contract (eager/lazy sets, batched IHAVE, GRAFT/PRUNE tree repair,
+      sender+seq ids, bounded GRAFT cache). Every wire message has
+      `WireName()` + a `SelfMarshaler` codec. Sim-based suites
+      (convergence/churn/shuffle, broadcast exactly-once/duplicate-bound/
+      partition-heal) + pure-logic unit tests, `-race -count=5` stable.
+      `cmd/gossip` rewritten onto the contract (static membership = the
+      simplest contract impl); new `cmd/broadcast` flagship (Plumtree/
+      HyParView/TCP, stdin→cluster, real-TCP integration test).
 - [x] Phase 4 (v0.6.0): prototest deterministic simulation —
       `prototest.Sim` runs a full protocol stack under a seeded
       scheduler on the mesh's shared `FakeClock` (`NewSim`/`Node`/
@@ -124,10 +139,10 @@ Everything below v1.0 may break API and wire format.
 
 ## Considered but out of scope
 
-- Multi-node gossip-membership (HyParView / SWIM). The static
-  membership in `cmd/gossip` is enough for framework validation.
-- Plumtree / lazy-push spanning-tree gossip. Eager push is the
-  right baseline.
+- HyParView and Plumtree were "out of scope" pre-launch but shipped
+  in Phase 5 as `protocols/hyparview` and `protocols/plumtree`. SWIM
+  stays out of scope (memberlist owns that niche); consensus
+  (Paxos/Raft over protorun) is a v1.x showcase, not a launch battery.
 - Wire-level TLS / authentication is not baked into the *protocol*
   layer, but Phase 3 added the seam: `transport.WithTLS` (and the
   QUIC backend, where TLS is mandatory) make "layer it on" a

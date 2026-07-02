@@ -1,45 +1,27 @@
-// Package membership implements a minimal membership layer for the
-// gossip example: it tracks the set of peers we are currently
-// session-connected to, and exposes that view to other protocols on
-// the same runtime via protorun's IPC primitives.
+// Package membership is the gossip example's membership layer: the
+// simplest possible implementation of the protocols/membership contract.
+// It connects to a fixed, static list of contacts and reports the peers
+// it is session-connected to. It answers membership.GetView and publishes
+// membership.NeighborUp / NeighborDown — nothing more.
 //
-// Two access patterns are supported:
+// It exists to make one point concrete: interchangeability. The gossip
+// protocol layered above talks only to the contract, so this static list
+// can be swapped for HyParView (protocols/hyparview) without touching a
+// line of the gossip protocol. This package is the pedagogical baseline;
+// HyParView is the real thing.
 //
-//   - Synchronous: a peer protocol issues a GetView request and
-//     receives a snapshot of the current view in the reply.
-//   - Asynchronous: a peer protocol subscribes to ViewChanged
-//     notifications and receives one event per add or remove.
-//
-// All state is owned by this protocol's event loop. There are no
-// public methods that read state from outside the loop. Observers
-// use IPC, which the runtime routes onto the loop for them.
+// All state is owned by this protocol's event loop. Observers reach it
+// through IPC (GetView) or the fan-out notifications, which the runtime
+// routes onto the loop for them.
 package membership
 
 import (
 	"github.com/antonionduarte/protorun"
+	"github.com/antonionduarte/protorun/protocols/membership"
 	"github.com/antonionduarte/protorun/transport"
 )
 
-// GetView is sent by a peer protocol to fetch a snapshot of the
-// current active view.
-type GetView struct{ protorun.BaseRequest }
-
-// View is the reply to GetView. Peers is a fresh slice owned by the
-// caller and safe to mutate.
-type View struct {
-	protorun.BaseReply
-	Peers []transport.Host
-}
-
-// ViewChanged is published every time the active view gains or loses
-// a peer. Exactly one of HasAdded / HasRemoved is true per event.
-type ViewChanged struct {
-	protorun.BaseNotification
-	Added, Removed       transport.Host
-	HasAdded, HasRemoved bool
-}
-
-// Protocol is the membership protocol. Construct with New, then
+// Protocol is the static membership protocol. Construct with New, then
 // Register with a Runtime.
 type Protocol struct {
 	contacts []transport.Host
@@ -47,8 +29,9 @@ type Protocol struct {
 	view     map[transport.Host]struct{}
 }
 
-// New returns a Protocol bootstrapped with the given contact peers.
-// On Init the protocol will ConnectWithRetry to each contact.
+// New returns a Protocol bootstrapped with the given contact peers. On
+// Init it ConnectWithRetry's to each contact; every established session
+// becomes a NeighborUp, every lost one a NeighborDown.
 func New(contacts []transport.Host) *Protocol {
 	return &Protocol{
 		contacts: contacts,
@@ -74,7 +57,7 @@ func (p *Protocol) OnSessionConnected(h transport.Host) {
 		return
 	}
 	p.view[h] = struct{}{}
-	protorun.PublishNotification(p.ctx, ViewChanged{Added: h, HasAdded: true})
+	protorun.PublishNotification(p.ctx, membership.NeighborUp{Peer: h})
 }
 
 func (p *Protocol) OnSessionDisconnected(h transport.Host) {
@@ -82,13 +65,13 @@ func (p *Protocol) OnSessionDisconnected(h transport.Host) {
 		return
 	}
 	delete(p.view, h)
-	protorun.PublishNotification(p.ctx, ViewChanged{Removed: h, HasRemoved: true})
+	protorun.PublishNotification(p.ctx, membership.NeighborDown{Peer: h})
 }
 
-func (p *Protocol) handleGetView(_ *GetView, r protorun.Responder[*View]) {
+func (p *Protocol) handleGetView(_ *membership.GetView, r protorun.Responder[*membership.View]) {
 	peers := make([]transport.Host, 0, len(p.view))
 	for h := range p.view {
 		peers = append(peers, h)
 	}
-	r.Reply(&View{Peers: peers})
+	r.Reply(&membership.View{Active: peers})
 }

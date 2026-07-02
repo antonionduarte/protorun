@@ -332,12 +332,61 @@ state and sends inside handlers, no goroutines of their own, no wall-clock
 reads). See [`docs/simulation.md`](docs/simulation.md) for how it works
 and the full contract.
 
+## Protocol library
+
+protorun ships batteries — real, paper-faithful distributed protocols you
+can stack and swap, all under [`protocols/`](protocols/) and all in the
+core module (no third-party dependencies):
+
+- **`protocols/membership`** — the interchangeability seam. A types-only
+  IPC contract: a membership protocol answers `GetView` (returning its
+  active view) and publishes `NeighborUp` / `NeighborDown`; a
+  dissemination protocol consumes exactly those. Interchangeability comes
+  from typed IPC contracts, not Go interfaces — the thing actor
+  frameworks structurally can't express. Being local IPC, the contract
+  carries no codecs and no `WireName`.
+- **`protocols/hyparview`** — a faithful HyParView (Leitão et al., 2007):
+  a small symmetric session-backed active view plus a larger passive
+  view, JOIN + ForwardJoin random walks, periodic shuffle, and
+  priority-based promotion on failure. Failure detection rides the
+  session layer — no extra heartbeats. Publishes the membership contract.
+- **`protocols/plumtree`** — a faithful Plumtree ("Epidemic Broadcast
+  Trees", 2007) over the contract: an eager-push spanning tree with
+  lazy-push `IHAVE` announcements, self-optimising via GRAFT/PRUNE.
+  Originate with a `Broadcast` request; receive a `Delivered` notification
+  per unique message.
+
+The point is composition: **Plumtree runs over HyParView without either
+knowing about the other** — they meet only at the contract. Swap HyParView
+for the gossip example's static membership (or a future SWIM) without
+touching the layer above:
+
+```go
+rt.Register(hyparview.New(self, hyparview.Config{Contacts: contacts}))
+rt.Register(plumtree.New(self, plumtree.Config{}))
+// the app originates a broadcast and hears deliveries, both over IPC:
+protorun.SendRequest(ctx, &plumtree.Broadcast{Payload: line}, func(*plumtree.BroadcastAck, error) {})
+protorun.SubscribeNotification(ctx, func(ev plumtree.Delivered) { /* ... */ })
+```
+
+Both protocols' primary test suites run on the seeded simulation
+(`prototest.Sim`): 20-node convergence, churn, shuffle rotation,
+exactly-once broadcast, spanning-tree duplicate bounds, and
+partition/heal — all in milliseconds of real time. See
+[`docs/protocols.md`](docs/protocols.md) for the full story, and
+[`cmd/broadcast/`](cmd/broadcast/) for the flagship Plumtree-over-
+HyParView-over-TCP demo.
+
 ## Documentation
 
 - Full API reference: `go doc github.com/antonionduarte/protorun`
 - Pingpong example: [`cmd/pingpong/`](cmd/pingpong/)
 - Gossip example (membership + eager-push gossip + 10-node integration
   test): [`cmd/gossip/`](cmd/gossip/)
+- Broadcast example (Plumtree over HyParView over TCP):
+  [`cmd/broadcast/`](cmd/broadcast/)
+- Protocol library (membership contract, HyParView, Plumtree):
+  [`docs/protocols.md`](docs/protocols.md)
 - Deterministic simulation guide: [`docs/simulation.md`](docs/simulation.md)
 - TLS / mTLS how-to: [`docs/how-to-tls.md`](docs/how-to-tls.md)
 - Wire format details: [`docs/wire-format.md`](docs/wire-format.md), plus
