@@ -23,7 +23,7 @@ func waitEvent(t *testing.T, ch chan transport.SessionEvent) transport.SessionEv
 // contract: one Connect, SessionConnected on both endpoints, each
 // carrying the other's Host.
 func TestMesh_Connect_BothSidesEstablished(t *testing.T) {
-	mesh := NewMesh()
+	mesh := NewMesh(t)
 	a := mesh.Node(transport.NewHost(1, "10.0.0.1"))
 	b := mesh.Node(transport.NewHost(2, "10.0.0.2"))
 	defer a.Cancel()
@@ -44,7 +44,7 @@ func TestMesh_Connect_BothSidesEstablished(t *testing.T) {
 // TestMesh_ConnectAbsentHost_Fails mirrors dialing a Host with no
 // listener: the dialer sees SessionFailed.
 func TestMesh_ConnectAbsentHost_Fails(t *testing.T) {
-	mesh := NewMesh()
+	mesh := NewMesh(t)
 	a := mesh.Node(transport.NewHost(1, "10.0.0.1"))
 	defer a.Cancel()
 
@@ -60,7 +60,7 @@ func TestMesh_ConnectAbsentHost_Fails(t *testing.T) {
 // TestMesh_SendDeliversToPeer verifies payload delivery over an
 // established session, with the sender's Host on the envelope.
 func TestMesh_SendDeliversToPeer(t *testing.T) {
-	mesh := NewMesh()
+	mesh := NewMesh(t)
 	a := mesh.Node(transport.NewHost(1, "10.0.0.1"))
 	b := mesh.Node(transport.NewHost(2, "10.0.0.2"))
 	defer a.Cancel()
@@ -90,7 +90,7 @@ func TestMesh_SendDeliversToPeer(t *testing.T) {
 // TestMesh_SendWithoutSession_Drops mirrors the real transport: no
 // live session means a silent drop, not an error or a delivery.
 func TestMesh_SendWithoutSession_Drops(t *testing.T) {
-	mesh := NewMesh()
+	mesh := NewMesh(t)
 	a := mesh.Node(transport.NewHost(1, "10.0.0.1"))
 	b := mesh.Node(transport.NewHost(2, "10.0.0.2"))
 	defer a.Cancel()
@@ -109,7 +109,7 @@ func TestMesh_SendWithoutSession_Drops(t *testing.T) {
 
 // TestMesh_Disconnect_BothSidesSee verifies teardown symmetry.
 func TestMesh_Disconnect_BothSidesSee(t *testing.T) {
-	mesh := NewMesh()
+	mesh := NewMesh(t)
 	a := mesh.Node(transport.NewHost(1, "10.0.0.1"))
 	b := mesh.Node(transport.NewHost(2, "10.0.0.2"))
 	defer a.Cancel()
@@ -134,7 +134,7 @@ func TestMesh_Disconnect_BothSidesSee(t *testing.T) {
 // TestMesh_Cancel_PeersSeeDisconnect mirrors a node going away: its
 // peers observe SessionDisconnected, and dialing it afterwards fails.
 func TestMesh_Cancel_PeersSeeDisconnect(t *testing.T) {
-	mesh := NewMesh()
+	mesh := NewMesh(t)
 	a := mesh.Node(transport.NewHost(1, "10.0.0.1"))
 	b := mesh.Node(transport.NewHost(2, "10.0.0.2"))
 	defer b.Cancel()

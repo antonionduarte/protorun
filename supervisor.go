@@ -318,8 +318,14 @@ func (p *protoProtocol) stopLoop() {
 // every queued event to the dead-letter hook. The old loop has already
 // exited, so nothing else is draining.
 func (p *protoProtocol) drainMailboxToDeadLetter() {
-	for _, ev := range p.currentMailbox().drain() {
+	drained := p.currentMailbox().drain()
+	for _, ev := range drained {
 		p.deadLetterEvent(ev)
+	}
+	// These events were counted on enqueue and will never be dispatched;
+	// release their inFlight count so Quiescent stays accurate.
+	if n := len(drained); n > 0 {
+		p.inFlight.Add(-int64(n))
 	}
 }
 

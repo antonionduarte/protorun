@@ -8,20 +8,22 @@ import (
 )
 
 // FakeClock is a virtual protorun.Clock: time advances only when the
-// test calls Advance. It is the foundation for deterministic simulation
-// (Phase 4): with timer order controlled by the test, timers, retries,
-// and request timeouts become reproducible.
+// clock is told to, via Advance. It is the foundation for deterministic
+// simulation — with timer order controlled instead of raced, timers,
+// retries, and request timeouts become reproducible.
 //
-// Advance fires every due AfterFunc callback and ticker tick in
-// deadline order (ties broken by arm order), stepping Now to each
-// deadline before invoking its callback, so a callback that reads Now
-// sees its own scheduled time. Callbacks run without the clock's lock
-// held, so they may re-enter the clock (arm more timers, Stop tickers)
-// without deadlocking.
+// Advance fires every due AfterFunc callback in deadline order (ties
+// broken by arm order), stepping Now to each deadline before invoking
+// its callback, so a callback that reads Now sees its own scheduled
+// time. Callbacks run without the clock's lock held, so they may
+// re-enter the clock (arm more timers, stop timers) without deadlocking.
+// Periodic timers (protorun ctx.Every) are built on AfterFunc, so they
+// too fire synchronously on the goroutine that calls Advance — there is
+// no background ticker goroutine to race.
 //
-// FakeClock is safe for concurrent use. Note that Phase 0 does not yet
-// switch prototest.NewRuntime onto it; it is exported now for direct
-// use via protorun.WithClock and unit testing.
+// FakeClock is safe for concurrent use. Under a Sim the mesh owns one
+// FakeClock shared by every node, and the Sim scheduler is the only
+// caller of Advance; direct use via protorun.WithClock is also fine.
 type FakeClock struct {
 	mu    sync.Mutex
 	now   time.Time
@@ -29,14 +31,11 @@ type FakeClock struct {
 	items []*fakeEntry
 }
 
-// fakeEntry is one scheduled fire: a one-shot AfterFunc (period == 0) or
-// a recurring ticker (period > 0).
+// fakeEntry is one scheduled one-shot AfterFunc fire.
 type fakeEntry struct {
 	deadline time.Time
-	seq      uint64         // arm order, breaks deadline ties
-	period   time.Duration  // 0 for a one-shot timer
-	fn       func()         // one-shot callback; nil for a ticker
-	ch       chan time.Time // ticker delivery channel; nil for a timer
+	seq      uint64 // arm order, breaks deadline ties
+	fn       func()
 	stopped  bool
 }
 
@@ -61,31 +60,15 @@ func (c *FakeClock) AfterFunc(d time.Duration, fn func()) protorun.ClockTimer {
 	return &fakeTimer{clock: c, entry: e}
 }
 
-// NewTicker returns a ticker that fires every d of virtual time. Its
-// channel is buffered with capacity 1 and Advance uses a non-blocking
-// send, mirroring time.Ticker's tick-coalescing under a slow receiver.
-func (c *FakeClock) NewTicker(d time.Duration) protorun.ClockTicker {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	e := &fakeEntry{
-		deadline: c.now.Add(d),
-		seq:      c.nextSeq(),
-		period:   d,
-		ch:       make(chan time.Time, 1),
-	}
-	c.items = append(c.items, e)
-	return &fakeTicker{clock: c, entry: e}
-}
-
 func (c *FakeClock) nextSeq() uint64 {
 	c.seq++
 	return c.seq
 }
 
-// Advance moves virtual time forward by d, firing every callback and
-// tick whose deadline falls in (now, now+d] in deadline-then-arm order.
-// Now steps to each deadline before its callback runs; after the last
-// due entry Now lands exactly on the old now+d.
+// Advance moves virtual time forward by d, firing every callback whose
+// deadline falls in (now, now+d] in deadline-then-arm order. Now steps
+// to each deadline before its callback runs; after the last due entry
+// Now lands exactly on the old now+d.
 func (c *FakeClock) Advance(d time.Duration) {
 	if d <= 0 {
 		return
@@ -100,21 +83,6 @@ func (c *FakeClock) Advance(d time.Duration) {
 			return
 		}
 		c.now = e.deadline
-		if e.period > 0 {
-			// Ticker: reschedule the next tick and deliver this one
-			// (non-blocking, coalescing) without holding the lock.
-			e.deadline = e.deadline.Add(e.period)
-			tick := c.now
-			ch := e.ch
-			c.mu.Unlock()
-			select {
-			case ch <- tick:
-			default:
-			}
-			c.mu.Lock()
-			continue
-		}
-		// One-shot: remove and fire without the lock.
 		e.stopped = true
 		c.removeLocked(e)
 		fn := e.fn
@@ -140,6 +108,50 @@ func (c *FakeClock) earliestDueLocked(target time.Time) *fakeEntry {
 	return best
 }
 
+// fireDue fires every entry whose deadline is at or before the current
+// Now — in deadline-then-arm order — without moving Now, and reports
+// whether any fired. The Sim uses it to flush timers armed for the
+// current instant (for example a handler arming After(0), or a re-arm
+// landing exactly on Now) so "advance to the next deadline" always makes
+// forward progress instead of spinning on a zero-length step.
+func (c *FakeClock) fireDue() bool {
+	fired := false
+	c.mu.Lock()
+	for {
+		e := c.earliestDueLocked(c.now)
+		if e == nil {
+			c.mu.Unlock()
+			return fired
+		}
+		e.stopped = true
+		c.removeLocked(e)
+		fn := e.fn
+		c.mu.Unlock()
+		fn()
+		fired = true
+		c.mu.Lock()
+	}
+}
+
+// nextDeadline reports the earliest pending fire time, if any. Used by
+// the Sim scheduler to decide how far to advance virtual time.
+func (c *FakeClock) nextDeadline() (time.Time, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var best time.Time
+	has := false
+	for _, e := range c.items {
+		if e.stopped {
+			continue
+		}
+		if !has || e.deadline.Before(best) {
+			best = e.deadline
+			has = true
+		}
+	}
+	return best, has
+}
+
 // removeLocked deletes e from the pending slice. Caller holds c.mu.
 func (c *FakeClock) removeLocked(e *fakeEntry) {
 	for i, x := range c.items {
@@ -163,14 +175,6 @@ func (c *FakeClock) stop(e *fakeEntry) bool {
 	return true
 }
 
-// pendingCount reports how many entries are still scheduled. Test-only
-// introspection.
-func (c *FakeClock) pendingCount() int {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return len(c.items)
-}
-
 // fakeTimer is the ClockTimer returned by FakeClock.AfterFunc.
 type fakeTimer struct {
 	clock *FakeClock
@@ -178,15 +182,6 @@ type fakeTimer struct {
 }
 
 func (t *fakeTimer) Stop() bool { return t.clock.stop(t.entry) }
-
-// fakeTicker is the ClockTicker returned by FakeClock.NewTicker.
-type fakeTicker struct {
-	clock *FakeClock
-	entry *fakeEntry
-}
-
-func (t *fakeTicker) C() <-chan time.Time { return t.entry.ch }
-func (t *fakeTicker) Stop()               { t.clock.stop(t.entry) }
 
 // Compile-time assertion that FakeClock satisfies the runtime seam.
 var _ protorun.Clock = (*FakeClock)(nil)

@@ -11,8 +11,7 @@ import (
 
 // manualClock is an in-package test Clock (prototest.FakeClock can't be
 // imported here without a cycle). It advances only via Advance, which
-// fires every due AfterFunc callback. NewTicker is unused by these
-// tests and delegates to the real clock.
+// fires every due AfterFunc callback.
 type manualClock struct {
 	mu      sync.Mutex
 	now     time.Time
@@ -42,10 +41,6 @@ func (m *manualClock) AfterFunc(d time.Duration, fn func()) ClockTimer {
 	t := &manualTimer{clock: m, deadline: m.now.Add(d), fn: fn}
 	m.entries = append(m.entries, t)
 	return t
-}
-
-func (m *manualClock) NewTicker(d time.Duration) ClockTicker {
-	return realClock{}.NewTicker(d)
 }
 
 func (m *manualClock) Advance(d time.Duration) {

@@ -6,9 +6,6 @@ Everything below v1.0 may break API and wire format.
 
 ## Pending (see docs/roadmap.md for designs)
 
-- [ ] Phase 4 (v0.6.0): prototest deterministic simulation — mesh
-      fault injection (cut/heal/loss/delay), seeded schedules,
-      virtual time via `FakeClock`, `prototest.Sim` harness.
 - [ ] Phase 5 (v0.7.0): protocol library — `protocols/membership`
       IPC contract, `protocols/hyparview`, `protocols/plumtree`,
       sim-based convergence/churn/partition suites.
@@ -19,6 +16,20 @@ Everything below v1.0 may break API and wire format.
 
 ## Done
 
+- [x] Phase 4 (v0.6.0): prototest deterministic simulation —
+      `prototest.Sim` runs a full protocol stack under a seeded
+      scheduler on the mesh's shared `FakeClock` (`NewSim`/`Node`/
+      `Run`/`RunUntil`/`Step`); mesh fault injection
+      (`Cut`/`Heal`/`Isolate`/`SetLoss`/`SetDelay`) off one seeded RNG;
+      `NewMesh(t, WithSeed/WithRealClock)` logging its seed; `NewRuntime`
+      on virtual time by default. Quiescence via `Runtime.Quiescent()`
+      (per-protocol in-flight counter) plus a `SyncDeliverer`/
+      `InboundSink` synchronous-delivery seam; `ctx.Every` reimplemented
+      on `AfterFunc` and `Clock.NewTicker` removed so periodic timers are
+      goroutine-free and deterministic. Proof tests: byte-identical
+      same-seed trace under `-race -count=20`, partition/heal in
+      sub-second wall time, loss/delay ordering, virtual-time timers.
+      Guide in `docs/simulation.md`.
 - [x] Phase 3 (v0.5.0): transport — `transport.Layer` addressed by
       `transport.Address` (`Message.Peer`/`Event.Peer()`), SessionLayer
       the sole `Address`→logical-`Host` translation point (`Sessions`

@@ -100,6 +100,13 @@ type Runtime struct {
 	networkLayer transport.Layer
 	sessionLayer Sessions
 
+	// syncInbound is set when the Sessions adapter opts into synchronous
+	// inbound delivery (see SyncDeliverer / simhook.go). When true the
+	// runtime does not start its async OutMessages/OutChannelEvents pump
+	// goroutines; the adapter drives processMessage/dispatchSessionEvent
+	// directly. Off for every production adapter. Read only during start.
+	syncInbound bool
+
 	logger  *slog.Logger
 	metrics Metrics
 
@@ -210,16 +217,26 @@ func (r *Runtime) start() error {
 
 	r.Logger().Info("runtime starting")
 
+	// Give a sync-delivery adapter (prototest's mesh under a Sim) the
+	// chance to take over inbound delivery. When it does, we skip the
+	// async pump goroutines below: the adapter calls processMessage /
+	// dispatchSessionEvent synchronously so a simulation can detect
+	// quiescence. Production adapters don't implement SyncDeliverer, so
+	// this is a no-op for them.
+	r.installSyncInbound()
+
 	r.startProtocols(r.ctx)
 	r.initProtocols()
 	// Supervisors start after boot so any Start/Init panic during boot
 	// is already buffered on their signal channel and handled the moment
 	// they come up — without racing the boot sequence itself.
 	r.startSupervisors(r.ctx)
-	r.startSessionEvents(r.ctx)
 
-	r.wg.Add(1)
-	go r.eventHandler(r.ctx)
+	if !r.syncInbound {
+		r.startSessionEvents(r.ctx)
+		r.wg.Add(1)
+		go r.eventHandler(r.ctx)
+	}
 	return nil
 }
 

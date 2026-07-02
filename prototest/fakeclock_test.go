@@ -89,38 +89,3 @@ func TestFakeClock_StopPreventsFire(t *testing.T) {
 		t.Fatalf("stopped timer must not fire")
 	}
 }
-
-// TestFakeClock_TickerFiresPerPeriod verifies a ticker delivers a tick
-// each period and stops on Stop.
-func TestFakeClock_TickerFiresPerPeriod(t *testing.T) {
-	c := NewFakeClock(epoch)
-	ticker := c.NewTicker(10 * time.Millisecond)
-
-	ticks := 0
-	for range 3 {
-		c.Advance(10 * time.Millisecond)
-		select {
-		case got := <-ticker.C():
-			ticks++
-			if want := c.Now(); !got.Equal(want) {
-				t.Fatalf("tick value = %v, want %v", got, want)
-			}
-		default:
-			t.Fatalf("expected a tick after advancing one period")
-		}
-	}
-	if ticks != 3 {
-		t.Fatalf("ticks = %d, want 3", ticks)
-	}
-
-	ticker.Stop()
-	if n := c.pendingCount(); n != 0 {
-		t.Fatalf("pending after ticker Stop = %d, want 0", n)
-	}
-	c.Advance(50 * time.Millisecond)
-	select {
-	case <-ticker.C():
-		t.Fatalf("stopped ticker must not deliver")
-	default:
-	}
-}

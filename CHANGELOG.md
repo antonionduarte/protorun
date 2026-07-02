@@ -117,12 +117,56 @@ first-class testing package for protocol authors.
   deterministic in-process delivery) implementing `Sessions`, plus a
   `NewRuntime` fixture: protocol authors can test full runtimes
   without TCP or port management.
+- **Deterministic simulation (`prototest.Sim`).** A whole protocol
+  stack — real runtimes, real protocols, real IPC — runs under a seeded
+  scheduler on the mesh's shared virtual clock. `NewSim(t,
+  WithSeed(n))`; `sim.Node(host, protocols...)` returns the real
+  runtime; `sim.Run(d)` / `sim.RunUntil(pred, max)` / `sim.Step()` drive
+  it. The scheduler delivers network events in seeded order, settles
+  every runtime to quiescence, then advances the clock to the next
+  timer/delivery deadline, so timers, request timeouts, and retry
+  backoff are all deterministic and a 30-second convergence test runs in
+  milliseconds. A given seed replays byte-identically (proven by
+  `TestSim_DeterministicTrace` under `-race -count=20`) for protocols
+  that follow the authoring contract. Full write-up in
+  `docs/simulation.md`.
+- **Mesh network-fault injection.** `mesh.Cut(a,b)` /
+  `mesh.Heal(a,b)` / `mesh.Isolate(h)` / `mesh.SetLoss(a,b,p)` /
+  `mesh.SetDelay(a,b,d,jitter)`. A Cut tears down any live session
+  (SessionDisconnected both sides) and loses in-flight messages; Heal
+  makes the link reachable again but does **not** auto-reconnect —
+  protocols reconnect themselves, as in production. Loss and jitter draw
+  from the mesh's single seeded RNG. `NewMesh(t, opts...)` gains
+  `WithSeed(int64)` and `WithRealClock()`, and always logs its seed for
+  reproduction.
+- **`Runtime.Quiescent() bool`.** A small introspection probe (all
+  protocol mailboxes empty and no handler mid-dispatch), backed by a
+  per-protocol in-flight counter incremented before enqueue and
+  decremented after dispatch. Documented as test-harness/diagnostics
+  surface; it is how the Sim detects when to take its next scheduling
+  step. A companion `SyncDeliverer` / `InboundSink` seam lets a Sessions
+  adapter deliver inbound traffic synchronously (the mesh under a Sim),
+  which is what makes quiescence observable; production adapters don't
+  implement it.
 - **Wire-format spec.** `docs/wire-format.md` is the authoritative
   envelope description; per-layer code comments now describe only
   the bytes that layer owns.
 
 ### Changed
 
+- **`prototest.NewRuntime` runs on virtual time by default.** Nodes on
+  one mesh now share the mesh's `FakeClock` (exposed via `mesh.Clock()`),
+  so their timers advance on one controllable timeline. Build the mesh
+  with `prototest.WithRealClock()` for wall time. `prototest.NewMesh`
+  now takes `testing.TB` (`NewMesh(t, opts...)`), so it can log its seed.
+- **`ctx.Every` no longer spawns a per-timer goroutine.** Periodic
+  timers are now built on the one-shot `AfterFunc` seam (re-arming after
+  each fire), so a virtual clock fires them synchronously on the
+  goroutine that advances it — the property the Sim's quiescence
+  detection needs — and production pays for no extra goroutine per
+  periodic timer. Scheduling is drift-free on a virtual clock and drifts
+  only by handler latency (not cumulatively) on the real clock. Public
+  API (`ctx.Every` / `TimerHandle`) is unchanged.
 - **`transport.Layer` is addressed by `transport.Address`, not `Host`.**
   `Connect`, `Disconnect`, and `Send` now take `transport.Address`;
   `Message.Host`/`Event.Host()` became `Message.Peer`/`Event.Peer()`
@@ -179,6 +223,12 @@ first-class testing package for protocol authors.
   gone (no deprecation shim); use `After` / `Every` / `TimerHandle`.
 - **`WithChannelBuffer`.** The runtime-wide per-channel buffer option
   is replaced by per-protocol `WithMailbox`.
+- **`Clock.NewTicker` / `ClockTicker`.** The `Clock` seam is now a
+  single primitive, `AfterFunc`; `ctx.Every` is built on it (see
+  Changed). Removing the ticker keeps the seam small enough that a
+  virtual clock can control every scheduled fire — including periodic
+  ones — synchronously. `prototest.FakeClock` loses its ticker methods
+  accordingly.
 
 ## v0.1.0, 2026-05-02
 

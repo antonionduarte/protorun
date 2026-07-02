@@ -53,7 +53,7 @@ func (p *pingProtocol) OnSessionDisconnected(_ transport.Host) {}
 // session events, protocol event loops — with no TCP, no handshake,
 // and no ports to reserve.
 func TestNewRuntime_TwoNodesExchangeMessages(t *testing.T) {
-	mesh := NewMesh()
+	mesh := NewMesh(t)
 	hostA := transport.NewHost(1, "10.0.0.1")
 	hostB := transport.NewHost(2, "10.0.0.2")
 
@@ -78,11 +78,34 @@ func TestNewRuntime_TwoNodesExchangeMessages(t *testing.T) {
 	waitPing("A", protoA.got, hostB)
 }
 
+// TestNewRuntime_WithRealClock opts a mesh out of virtual time: Clock is
+// nil and the runtimes run on wall time, yet the exchange still works.
+func TestNewRuntime_WithRealClock(t *testing.T) {
+	mesh := NewMesh(t, WithRealClock())
+	if mesh.Clock() != nil {
+		t.Fatalf("WithRealClock mesh should expose a nil Clock, got %v", mesh.Clock())
+	}
+	hostA := transport.NewHost(1, "10.0.0.1")
+	hostB := transport.NewHost(2, "10.0.0.2")
+
+	protoB := newPingProtocol(transport.Host{})
+	NewRuntime(t, mesh, hostB, []protorun.Protocol{protoB})
+
+	protoA := newPingProtocol(hostB)
+	NewRuntime(t, mesh, hostA, []protorun.Protocol{protoA})
+
+	select {
+	case <-protoB.got:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("timed out waiting for ping on a real-clock mesh")
+	}
+}
+
 // TestNewRuntime_StrictModeWorksOnMesh runs the same exchange under
 // WithStrict to prove the fixture forwards runtime options and the
 // mesh respects the runtime's phase discipline.
 func TestNewRuntime_StrictModeWorksOnMesh(t *testing.T) {
-	mesh := NewMesh()
+	mesh := NewMesh(t)
 	hostA := transport.NewHost(1, "10.0.0.1")
 	hostB := transport.NewHost(2, "10.0.0.2")
 

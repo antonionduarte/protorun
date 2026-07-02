@@ -17,6 +17,11 @@ const shutdownTimeout = 5 * time.Second
 // registers the given protocols, starts the runtime, and registers a
 // bounded shutdown on t.Cleanup. Extra runtime options (WithMetrics,
 // WithStrict, ...) go through opts.
+//
+// The runtime runs on the mesh's shared virtual clock by default (all
+// nodes on one mesh share one timeline); build the mesh with
+// prototest.WithRealClock for wall time. A caller-supplied
+// protorun.WithClock in opts still wins, since options apply in order.
 func NewRuntime(
 	t testing.TB,
 	mesh *Mesh,
@@ -27,8 +32,15 @@ func NewRuntime(
 	t.Helper()
 
 	node := mesh.Node(self)
-	opts = append(opts, protorun.WithTransport(nil, node))
-	rt := protorun.New(self, opts...)
+	full := make([]protorun.Option, 0, len(opts)+2)
+	if mesh.clock != nil {
+		full = append(full, protorun.WithClock(mesh.clock))
+	}
+	full = append(full, protorun.WithTransport(nil, node))
+	full = append(full, opts...)
+
+	rt := protorun.New(self, full...)
+	node.rt = rt
 	for _, p := range protocols {
 		rt.Register(p)
 	}

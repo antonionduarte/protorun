@@ -292,12 +292,53 @@ protocol; `Escalate` cancels the runtime and `Run` returns an
 `ErrProtocolFailed`-wrapped error. Every outcome publishes a
 `ProtocolFailed` notification siblings can subscribe to.
 
+## Testing
+
+Test protocols against `prototest`, not TCP. An in-memory mesh stands in
+for the whole transport + handshake stack at the Sessions seam, so full
+runtimes talk in-process with no wire, no ports, and no flakiness.
+
+The headline is **deterministic simulation**: a whole protocol stack runs
+under a seeded scheduler on a virtual clock. A 30-second partition/heal
+convergence test finishes in milliseconds of real time and, for a given
+seed, produces the exact same schedule every run.
+
+```go
+func TestConverges(t *testing.T) {
+    sim := prototest.NewSim(t, prototest.WithSeed(42))
+    a := sim.Node(hostA, newMyProto(hostA, hostB))
+    b := sim.Node(hostB, newMyProto(hostB, hostA))
+
+    sim.Run(1 * time.Second)              // let sessions establish
+    sim.Mesh().Cut(hostA, hostB)          // partition mid-run
+    sim.Run(5 * time.Second)              // ... assert divergence ...
+    sim.Mesh().Heal(hostA, hostB)         // reachable again (no auto-reconnect)
+
+    ok := sim.RunUntil(func() bool { return converged(a) && converged(b) },
+        30*time.Second)
+    if !ok { t.Fatal("did not converge") }
+}
+```
+
+The scheduler delivers network events in seeded order, settles every
+runtime to quiescence, then advances the shared clock to the next
+timer/delivery deadline — so timers, request timeouts, and retry backoff
+are all deterministic. Inject faults with `Cut` / `Heal` / `Isolate` /
+`SetLoss` / `SetDelay`. Every run logs its seed; drop it into
+`prototest.WithSeed(n)` to replay a failure exactly.
+
+Determinism holds for protocols that follow the authoring contract (all
+state and sends inside handlers, no goroutines of their own, no wall-clock
+reads). See [`docs/simulation.md`](docs/simulation.md) for how it works
+and the full contract.
+
 ## Documentation
 
 - Full API reference: `go doc github.com/antonionduarte/protorun`
 - Pingpong example: [`cmd/pingpong/`](cmd/pingpong/)
 - Gossip example (membership + eager-push gossip + 10-node integration
   test): [`cmd/gossip/`](cmd/gossip/)
+- Deterministic simulation guide: [`docs/simulation.md`](docs/simulation.md)
 - TLS / mTLS how-to: [`docs/how-to-tls.md`](docs/how-to-tls.md)
 - Wire format details: [`docs/wire-format.md`](docs/wire-format.md), plus
   the package doc on `transport` and `wire`.

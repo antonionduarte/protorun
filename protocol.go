@@ -160,6 +160,15 @@ type (
 		// once per second per protocol.
 		lastMailboxWarn atomic.Int64
 
+		// inFlight counts events that have been accepted into the mailbox
+		// but not yet fully dispatched. It is incremented by the producer
+		// BEFORE the mailbox push (so no window exists where an event is
+		// live but uncounted) and decremented by the event loop AFTER
+		// dispatch returns. Runtime.Quiescent sums it across protocols;
+		// see that method for the memory-model argument. Zero cost on
+		// the happy path (one atomic add per enqueue/dispatch).
+		inFlight atomic.Int64
+
 		handlers map[uint64]func(Message, transport.Host)
 
 		// timers holds every live TimerHandle this protocol owns, keyed
@@ -451,6 +460,10 @@ func (p *protoProtocol) eventHandler(ctx context.Context, wg *sync.WaitGroup, do
 			return
 		}
 		p.dispatch(ev)
+		// Balance the pre-increment done in enqueue: the event is now
+		// fully handled. Ordered after dispatch so Quiescent can only
+		// read zero once the handler has actually returned.
+		p.inFlight.Add(-1)
 		// A non-Resume panic during dispatch asks the loop to exit so
 		// the supervisor can rebuild on a fresh mailbox and instance.
 		if p.exitLoop.Load() {
@@ -536,10 +549,22 @@ func (p *protoProtocol) enqueue(ctx context.Context, ev protoEvent) bool {
 		p.deadLetterEvent(ev)
 		return true
 	}
+	// Pre-increment before the push so an event is never observable as
+	// live-but-uncounted (the ordering Quiescent relies on).
+	p.inFlight.Add(1)
 	mailbox := p.currentMailbox()
 	dropped, didDrop, ok := mailbox.push(ctx, ev)
 	if !ok {
+		// Aborted by ctx (shutdown); nothing entered the mailbox.
+		p.inFlight.Add(-1)
 		return false
+	}
+	if didDrop {
+		// Exactly one event left the pipeline without dispatch: for
+		// DropNewest it is the incoming ev we just counted; for
+		// DropOldest it is an older event counted when it was enqueued.
+		// Either way one dispatch will not happen, so undo one count.
+		p.inFlight.Add(-1)
 	}
 	depth := mailbox.depth()
 	p.runtime.metrics.Histogram("protorun.mailbox.depth", float64(depth),

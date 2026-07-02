@@ -10,19 +10,23 @@ import "time"
 // the time package; tests inject a virtual clock (see
 // prototest.FakeClock) to make timer order fully deterministic.
 //
+// The seam is a single primitive, AfterFunc: one-shot and periodic
+// timers (After/Every) are both built on it (Every re-arms an AfterFunc
+// after each fire). Keeping the seam to one method is what lets a
+// virtual clock control every scheduled fire — including periodic ones
+// — synchronously, with no background ticker goroutine that would race
+// the simulation's quiescence detection.
+//
 // Implementations MUST be safe for concurrent use: the runtime calls
 // Clock methods from many goroutines.
 type Clock interface {
 	// Now returns the current time.
 	Now() time.Time
 
-	// AfterFunc schedules fn to run in its own goroutine after d
-	// elapses. The returned ClockTimer can Stop the pending fire.
+	// AfterFunc schedules fn to run after d elapses (for the real clock,
+	// in its own goroutine; for a virtual clock, on the goroutine that
+	// advances it). The returned ClockTimer can Stop the pending fire.
 	AfterFunc(d time.Duration, fn func()) ClockTimer
-
-	// NewTicker returns a ticker that delivers the time on its channel
-	// every d until stopped.
-	NewTicker(d time.Duration) ClockTicker
 }
 
 // ClockTimer is a pending one-shot scheduled via Clock.AfterFunc. Stop
@@ -30,13 +34,6 @@ type Clock interface {
 // did so (mirrors time.Timer.Stop).
 type ClockTimer interface {
 	Stop() bool
-}
-
-// ClockTicker is a recurring tick source from Clock.NewTicker. C is the
-// delivery channel; Stop halts further ticks (but does not close C).
-type ClockTicker interface {
-	C() <-chan time.Time
-	Stop()
 }
 
 // realClock is the production Clock: a thin, allocation-free adapter
@@ -50,18 +47,9 @@ func (realClock) AfterFunc(d time.Duration, fn func()) ClockTimer {
 	return realTimer{t: time.AfterFunc(d, fn)}
 }
 
-func (realClock) NewTicker(d time.Duration) ClockTicker {
-	return realTicker{t: time.NewTicker(d)}
-}
-
 type realTimer struct{ t *time.Timer }
 
 func (r realTimer) Stop() bool { return r.t.Stop() }
-
-type realTicker struct{ t *time.Ticker }
-
-func (r realTicker) C() <-chan time.Time { return r.t.C }
-func (r realTicker) Stop()               { r.t.Stop() }
 
 // WithClock overrides the runtime's Clock. Pass a nil clock (or omit
 // the option) to keep the real-time default. See Clock.

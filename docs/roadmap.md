@@ -367,7 +367,52 @@ remains the reference backend.
 
 ---
 
-## Phase 4 — prototest → deterministic simulation (v0.6.0)
+## Phase 4 — prototest → deterministic simulation (v0.6.0) — done
+
+Delivered: `prototest.Sim` runs a full protocol stack — real runtimes,
+real protocols, real IPC — under a seeded scheduler on the mesh's shared
+`FakeClock`. `NewSim(t, WithSeed(n))`; `sim.Node(host, protocols...)`
+returns the real runtime; `sim.Run(d)` / `sim.RunUntil(pred, max)` /
+`sim.Step()` drive it. The scheduler drains all deliverable events in
+seeded order (one at a time, settling to quiescence after each), then
+advances the clock to the next timer/delivery deadline — so timers,
+request timeouts, and retry backoff are deterministic and a 30-second
+convergence test runs in milliseconds. The mesh grows fault injection
+(`Cut`/`Heal`/`Isolate`/`SetLoss`/`SetDelay`, all off one seeded RNG),
+and `NewMesh(t, opts...)` gains `WithSeed`/`WithRealClock` and logs its
+seed. `NewRuntime` defaults to the shared virtual clock (opt out with
+`WithRealClock`). Proof tests: `TestSim_DeterministicTrace` (same-seed
+traces byte-identical under `-race -count=20`), `TestSim_PartitionHeal`
+(5-node flood, partition/heal, full delivery invariants, sub-second
+wall time), `TestSim_LossAndDelay`, and virtual-time timer integration.
+Write-up in `docs/simulation.md`.
+
+Quiescence — the crux — is a per-protocol in-flight counter incremented
+by the producer *before* the mailbox push and decremented by the event
+loop *after* dispatch, exposed as `Runtime.Quiescent()`. Because the
+increment precedes the push and Go atomics are sequentially consistent,
+a scheduler that reads zero has seen every event drained. It is sound
+only because the Sim is the sole source of new work while it waits:
+inbound delivery is synchronous (the mesh implements a new
+`SyncDeliverer`/`InboundSink` seam; the runtime skips its async pump
+goroutines under a Sim), and periodic timers no longer use a background
+ticker goroutine — `ctx.Every` was reimplemented on the one-shot
+`AfterFunc` seam, and `Clock.NewTicker`/`ClockTicker` were removed.
+
+Determinism caveats found and documented: (1) it holds only for
+protocols that follow the authoring contract (all state and sends inside
+handlers, no own goroutines, no wall-clock reads); out-of-contract
+protocols get best-effort scheduling. (2) Go randomizes map iteration,
+so a handler that forwards to peers by ranging a `map` leaks
+nondeterminism into send order (and thus the seeded pick); protocols
+must sort before iterating — a property of Go, not the harness, called
+out in `docs/simulation.md`. (3) `WithRealClock` under a Sim is ignored
+(the scheduler requires virtual time). Minor core deviation from the
+sketch: the scheduler is exposed as the ergonomic `Sim` type
+(`Run`/`RunUntil`/`Step`) rather than a `Run(d, func(Step))` step-hook,
+and the only new core surface beyond the expected `Quiescent()` probe is
+the `SyncDeliverer`/`InboundSink` delivery seam it required — both
+scoped and documented as test-harness surface.
 
 The Sessions seam plus the Clock seam make protorun the only Go
 framework where a *full protocol stack* can run under seeded,

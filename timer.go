@@ -1,7 +1,7 @@
 package protorun
 
 import (
-	"context"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -33,7 +33,20 @@ type timerHandle struct {
 	owner     *protoProtocol
 	fn        func()
 	cancelled atomic.Bool
-	stop      func() // stops the underlying clock timer / ticker goroutine
+
+	// stop stops the clock timer currently backing this handle. For a
+	// periodic timer (Every) the backing clock timer is replaced on
+	// every fire, so stop is updated under stopMu each time it re-arms.
+	stopMu sync.Mutex
+	stop   func()
+}
+
+// setStop installs fn as the current underlying-timer stopper. Called
+// once for a one-shot and after each re-arm for a periodic timer.
+func (h *timerHandle) setStop(fn func()) {
+	h.stopMu.Lock()
+	h.stop = fn
+	h.stopMu.Unlock()
 }
 
 // cancel marks the timer cancelled, drops it from the owner's table,
@@ -44,8 +57,11 @@ func (h *timerHandle) cancel() {
 		return
 	}
 	h.owner.forgetTimer(h.id)
-	if h.stop != nil {
-		h.stop()
+	h.stopMu.Lock()
+	stop := h.stop
+	h.stopMu.Unlock()
+	if stop != nil {
+		stop()
 	}
 }
 
@@ -63,34 +79,51 @@ func (r *Runtime) after(owner *protoProtocol, d time.Duration, fn func()) TimerH
 		}
 		owner.enqueue(ctx, protoEvent{kind: evTimer, timer: h})
 	})
-	h.stop = func() { ct.Stop() }
+	h.setStop(func() { ct.Stop() })
 	return TimerHandle{h: h}
 }
 
 // every schedules fn to fire on owner's event loop once per d until the
-// handle is cancelled or the runtime shuts down. A per-timer goroutine
-// (tracked by the runtime WaitGroup) drives a Clock ticker; cancelling
-// the handle cancels its context, which stops the goroutine and the
-// ticker.
+// handle is cancelled or the runtime shuts down. It is built on the
+// same one-shot AfterFunc seam as after: each fire enqueues the tick and
+// re-arms the next AfterFunc, so there is no background ticker
+// goroutine. That matters for two reasons — production pays for no extra
+// goroutine per periodic timer, and under a virtual clock the fire (and
+// its enqueue) happens synchronously on the goroutine that advances the
+// clock, which is what keeps periodic timers deterministic inside the
+// simulation harness.
+//
+// The next fire is scheduled d after the current deadline (read from the
+// clock inside the fire), so a virtual clock stays perfectly periodic
+// and a real clock only drifts by handler latency, not cumulatively.
 func (r *Runtime) every(owner *protoProtocol, d time.Duration, fn func()) TimerHandle {
 	h := &timerHandle{id: r.nextTimerID.Add(1), owner: owner, fn: fn}
 	owner.trackTimer(h)
-	ctx, cancel := context.WithCancel(r.ctx)
-	ticker := r.clock.NewTicker(d)
-	h.stop = cancel
-	r.wg.Go(func() {
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C():
-				if h.cancelled.Load() {
-					return
-				}
-				owner.enqueue(ctx, protoEvent{kind: evTimer, timer: h})
-			}
+	ctx := r.ctx
+
+	var arm func()
+	arm = func() {
+		if h.cancelled.Load() {
+			return
 		}
-	})
+		owner.enqueue(ctx, protoEvent{kind: evTimer, timer: h})
+		if h.cancelled.Load() {
+			return
+		}
+		ct := r.clock.AfterFunc(d, arm)
+		h.setStop(func() { ct.Stop() })
+		// Lost the race with a concurrent cancel that ran between the
+		// check above and setStop: stop the timer we just armed so no
+		// fire outlives the cancel.
+		if h.cancelled.Load() {
+			ct.Stop()
+		}
+	}
+
+	ct := r.clock.AfterFunc(d, arm)
+	h.setStop(func() { ct.Stop() })
+	if h.cancelled.Load() {
+		ct.Stop()
+	}
 	return TimerHandle{h: h}
 }
