@@ -15,6 +15,25 @@ first-class testing package for protocol authors.
 
 ### Added
 
+- **Unified per-protocol mailbox with overflow policy.** The six
+  per-protocol channels (messages, timers, session events, requests,
+  replies, notifications) collapse into one ordered mailbox carrying a
+  tagged event union, so arrival order is delivery order across kinds.
+  `Register` grows variadic `RegisterOption`s; `WithMailbox(Mailbox{
+  Capacity, Overflow})` chooses the policy: `OverflowBlock` (default,
+  backpressure the producer, ctx-guarded so shutdown can't deadlock),
+  `OverflowDropOldest` / `OverflowDropNewest` (non-blocking; the
+  evicted/rejected event goes to a `WithDeadLetter(func(DeadLetter))`
+  hook), and `OverflowUnbounded` (never blocks, grows). New metrics
+  `protorun.mailbox.depth` (histogram, sampled on enqueue) and
+  `protorun.mailbox.dropped` (counter); strict mode warns, rate-
+  limited once per second per protocol, above 80% occupancy.
+- **`Clock` seam.** A `Clock` interface (`Now` / `AfterFunc` /
+  `NewTicker`) now backs the timer table, retry backoff, request-
+  timeout arming, the strict watchdog, and IPC latency. `WithClock`
+  swaps it; the default is a zero-allocation real-time clock.
+  `prototest.FakeClock` (`NewFakeClock` / `Now` / `Advance`) drives
+  virtual time for deterministic tests.
 - **Handshake Reject.** A server that receives a Hello with an
   unsupported wire-format version now answers with an explicit
   `Reject` (HandshakeType 3, carrying the refuser's version) before
@@ -42,6 +61,14 @@ first-class testing package for protocol authors.
 
 ### Changed
 
+- **Timer API redesigned around handles.** `ctx.After(d, fn)` and
+  `ctx.Every(d, fn)` replace the old `Timer`/`TimerID` surface. Both
+  return a `TimerHandle` with an idempotent `Cancel` that is safe
+  after fire and from inside the protocol's own handlers (a same-loop
+  cancel guarantees the callback never runs, even if the fire is
+  already queued). The payload rides by closure capture; there are no
+  user-managed IDs and no silent replacement, and every handle a
+  protocol owns is cancelled on shutdown.
 - **Module renamed to `github.com/antonionduarte/protorun`.**
   Previously `github.com/antonionduarte/go-simple-protocol-runtime`.
   `pkg/protorun` is promoted to the module root, and `pkg/transport`,
@@ -69,6 +96,14 @@ first-class testing package for protocol authors.
   the session goroutine at shutdown). The runtime's event mapper now
   has a loud default plus a coverage test so new event kinds can't
   be silently unrouted.
+
+### Removed
+
+- **Old timer surface.** `Timer`, `TimerID()`, `SetupTimer`,
+  `SetupPeriodicTimer`, `CancelTimer`, and `RegisterTimerHandler` are
+  gone (no deprecation shim); use `After` / `Every` / `TimerHandle`.
+- **`WithChannelBuffer`.** The runtime-wide per-channel buffer option
+  is replaced by per-protocol `WithMailbox`.
 
 ## v0.1.0, 2026-05-02
 

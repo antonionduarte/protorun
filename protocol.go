@@ -28,11 +28,6 @@ type PanicHandler interface {
 	OnPanic(where string, recovered any)
 }
 
-// Package runtime exposes the core protocol runtime and the primary APIs
-// that protocol implementations interact with. Most user code should
-// depend on the abstract interfaces here (Protocol, ProtocolContext,
-// Message, Codec, Timer) rather than on the concrete Runtime type.
-
 type (
 	// Connector is the capability for opening, retrying, and tearing
 	// down sessions with peers. Handlers that only need to react to
@@ -54,14 +49,16 @@ type (
 	}
 
 	// Timing is the capability for scheduling one-shot and periodic
-	// timers and registering their handlers. Handlers fire on the
-	// owning protocol's event loop; TimerID() must be unique per
-	// logical timer.
+	// callbacks. Both fire on the owning protocol's event loop, so the
+	// callback may touch protocol state without locking. The payload
+	// travels by closure capture; there is no timer value and no
+	// user-managed id. The returned TimerHandle cancels the timer.
 	Timing interface {
-		SetupTimer(timer Timer, duration time.Duration)
-		SetupPeriodicTimer(timer Timer, duration time.Duration)
-		CancelTimer(timerID int)
-		RegisterTimerHandler(timer Timer, handler func(Timer))
+		// After schedules fn to run once after d.
+		After(d time.Duration, fn func()) TimerHandle
+		// Every schedules fn to run once per d until cancelled or the
+		// runtime shuts down.
+		Every(d time.Duration, fn func()) TimerHandle
 	}
 
 	// Identity is the capability for reading the protocol's view of
@@ -108,22 +105,30 @@ type (
 	}
 
 	protoProtocol struct {
-		protocol       Protocol
-		runtime        *Runtime
-		timerChannel   chan Timer
-		messageChannel chan messageEnvelope
-		sessionEvents  chan sessionEvent
+		protocol Protocol
+		runtime  *Runtime
 
-		// IPC channels: requests inbound to this protocol's handler,
-		// replies inbound to this protocol's outstanding SendRequest
-		// calls, and notifications inbound to this protocol's
-		// subscriptions.
-		requestEvents      chan inboundRequest
-		replyEvents        chan inboundReply
-		notificationEvents chan inboundNotification
+		// name is fmt.Sprintf("%T", protocol), cached for the metric,
+		// dead-letter, and log fields that report it on hot paths.
+		name string
 
-		handlers      map[uint64]func(Message, transport.Host)
-		timerHandlers map[int]func(timer Timer)
+		// mailbox is the single ordered event queue that replaced the
+		// former six per-kind channels. Arrival order is delivery order
+		// across message / timer / session / IPC events.
+		mailbox mailbox
+
+		// lastMailboxWarn is the unix-nano timestamp of the last
+		// strict-mode high-occupancy warning, used to rate-limit it to
+		// once per second per protocol.
+		lastMailboxWarn atomic.Int64
+
+		handlers map[uint64]func(Message, transport.Host)
+
+		// timers holds every live TimerHandle this protocol owns, keyed
+		// by the runtime-monotonic timer id. Used to cancel them all on
+		// shutdown. Guarded by timersMu.
+		timers   map[uint64]*timerHandle
+		timersMu sync.Mutex
 
 		// pending tracks outstanding SendRequest calls awaiting a reply
 		// or timeout. Indexed by per-protocol monotonic request ID.
@@ -143,15 +148,6 @@ type (
 		ctx ProtocolContext
 	}
 
-	// messageEnvelope carries a decoded inbound Message together with the
-	// transport-level host it arrived from. The from value is supplied to
-	// the handler as the second arg, so handlers see (msg, from) without
-	// having to encode sender info on the wire.
-	messageEnvelope struct {
-		msg  Message
-		from transport.Host
-	}
-
 	protocolContext struct {
 		proto   *protoProtocol
 		runtime *Runtime
@@ -159,33 +155,27 @@ type (
 	}
 )
 
-// newProtoProtocol wraps a user Protocol in the framework's protoProtocol
-// envelope, using the supplied per-channel buffer size. Most callers go
-// through Runtime.Register, which threads the runtime's configured
-// buffer (set via WithChannelBuffer); this lower-level form is for tests.
-// A non-positive buf falls back to defaultProtoChannelBuffer.
-func newProtoProtocol(protocol Protocol, buf int) *protoProtocol {
-	if buf <= 0 {
-		buf = defaultProtoChannelBuffer
-	}
-	return &protoProtocol{
-		protocol:           protocol,
-		timerChannel:       make(chan Timer, buf),
-		messageChannel:     make(chan messageEnvelope, buf),
-		sessionEvents:      make(chan sessionEvent, buf),
-		requestEvents:      make(chan inboundRequest, buf),
-		replyEvents:        make(chan inboundReply, buf),
-		notificationEvents: make(chan inboundNotification, buf),
-		handlers:           make(map[uint64]func(Message, transport.Host)),
-		timerHandlers:      make(map[int]func(timer Timer)),
-		pending:            make(map[uint64]pendingRequest),
-	}
+// newProtoProtocol wraps a user Protocol in a protoProtocol envelope
+// with an OverflowBlock mailbox of the given capacity (defaulting when
+// non-positive). It is the convenience form used by in-package tests;
+// Runtime.Register goes through newProtoProtocolMailbox with a Mailbox
+// assembled from the caller's RegisterOptions.
+func newProtoProtocol(protocol Protocol, capacity int) *protoProtocol {
+	return newProtoProtocolMailbox(protocol, Mailbox{Capacity: capacity, Overflow: OverflowBlock})
 }
 
-// defaultProtoChannelBuffer is the fallback buffer size used when the
-// caller passes <=0 to newProtoProtocol or no WithChannelBuffer option
-// is supplied to runtime.New.
-const defaultProtoChannelBuffer = 16
+// newProtoProtocolMailbox wraps a user Protocol in a protoProtocol
+// envelope backed by a mailbox built from m.
+func newProtoProtocolMailbox(protocol Protocol, m Mailbox) *protoProtocol {
+	return &protoProtocol{
+		protocol: protocol,
+		name:     fmt.Sprintf("%T", protocol),
+		mailbox:  newMailbox(m),
+		handlers: make(map[uint64]func(Message, transport.Host)),
+		timers:   make(map[uint64]*timerHandle),
+		pending:  make(map[uint64]pendingRequest),
+	}
+}
 
 // bindRuntime is called by Runtime.registerProtocol so the protocol can
 // resolve its hosting runtime when ensureContext fires.
@@ -210,12 +200,6 @@ func (p *protoProtocol) Init() {
 	p.protocol.Init(p.ctx)
 	p.setPhase(phaseRunning)
 }
-
-func (p *protoProtocol) RegisterTimerHandler(timer Timer, handler func(Timer)) {
-	p.timerHandlers[timer.TimerID()] = handler
-}
-
-func (p *protoProtocol) TimerChannel() chan Timer { return p.timerChannel }
 
 // ensureContext lazily initializes the ProtocolContext. The protocol must
 // have been registered with a Runtime via registerProtocol or Register
@@ -258,16 +242,13 @@ func (c *protocolContext) Send(msg Message, to transport.Host) error {
 	return c.runtime.sendMessage(msg, to)
 }
 
-func (c *protocolContext) SetupTimer(timer Timer, duration time.Duration) {
-	c.runtime.setupTimer(c.proto, timer, duration)
+func (c *protocolContext) After(d time.Duration, fn func()) TimerHandle {
+	c.proto.requireActivePhase("After")
+	return c.runtime.after(c.proto, d, fn)
 }
-func (c *protocolContext) SetupPeriodicTimer(timer Timer, duration time.Duration) {
-	c.runtime.setupPeriodicTimer(c.proto, timer, duration)
-}
-func (c *protocolContext) CancelTimer(timerID int) { c.runtime.cancelTimer(timerID) }
-
-func (c *protocolContext) RegisterTimerHandler(timer Timer, handler func(Timer)) {
-	c.proto.timerHandlers[timer.TimerID()] = handler
+func (c *protocolContext) Every(d time.Duration, fn func()) TimerHandle {
+	c.proto.requireActivePhase("Every")
+	return c.runtime.every(c.proto, d, fn)
 }
 
 func (c *protocolContext) Self() transport.Host { return c.runtime.self }
@@ -364,44 +345,111 @@ func (c *protocolContext) reportPanic(where string, rec any, stack []byte) {
 func (p *protoProtocol) eventHandler(ctx context.Context, wg *sync.WaitGroup) {
 	defer wg.Done()
 	for {
-		select {
-		case <-ctx.Done():
+		ev, ok := p.mailbox.next(ctx)
+		if !ok {
 			return
-		case env := <-p.messageChannel:
-			p.handleMessage(env)
-		case timer := <-p.timerChannel:
-			p.handleTimer(timer)
-		case ev := <-p.sessionEvents:
-			p.safeCall("session event handler", func() { p.deliverSessionEvent(ev) })
-		case req := <-p.requestEvents:
-			// The IPC closure created in RegisterRequestHandler has its
-			// own recover() that auto-fails the responder; safeCall
-			// here is belt-and-suspenders for the (impossible by
-			// construction) case where the closure itself panics
-			// before installing its defer.
-			p.safeCall("request handler", func() { req.handler(req.req, req.token) })
-		case rep := <-p.replyEvents:
-			p.safeCall("reply handler", func() { p.deliverReply(rep) })
-		case n := <-p.notificationEvents:
-			p.safeCall("notification handler", func() { n.handler(n.n) })
 		}
+		p.dispatch(ev)
 	}
 }
 
-func (p *protoProtocol) handleMessage(env messageEnvelope) {
-	h := p.handlers[wireIDOf(env.msg)]
-	if h == nil {
-		return
+// dispatch routes one mailbox event to the right handler. Every kind
+// travels the same ordered queue, so the order handlers observe here is
+// exactly the order producers enqueued in.
+func (p *protoProtocol) dispatch(ev protoEvent) {
+	switch ev.kind {
+	case evMessage:
+		p.handleMessage(ev.msg, ev.from)
+	case evTimer:
+		// Recheck cancellation at dispatch time: the fire may have been
+		// queued before the user cancelled the handle. This is what
+		// guarantees a callback never runs after a same-loop Cancel.
+		if ev.timer.cancelled.Load() {
+			return
+		}
+		p.safeCall("timer handler", ev.timer.fn)
+	case evSession:
+		p.safeCall("session event handler", func() { p.deliverSessionEvent(ev.aux.session) })
+	case evRequest:
+		// The IPC closure created in RegisterRequestHandler has its own
+		// recover() that auto-fails the responder; safeCall here is
+		// belt-and-suspenders for the (impossible by construction) case
+		// where the closure itself panics before installing its defer.
+		req := ev.aux.request
+		p.safeCall("request handler", func() { req.handler(req.req, req.token) })
+	case evReply:
+		p.safeCall("reply handler", func() { p.deliverReply(ev.aux.reply) })
+	case evNotification:
+		notif := ev.aux.notif
+		p.safeCall("notification handler", func() { notif.handler(notif.n) })
 	}
-	p.safeCall("message handler", func() { h(env.msg, env.from) })
 }
 
-func (p *protoProtocol) handleTimer(timer Timer) {
-	h := p.timerHandlers[timer.TimerID()]
+func (p *protoProtocol) handleMessage(msg Message, from transport.Host) {
+	h := p.handlers[wireIDOf(msg)]
 	if h == nil {
 		return
 	}
-	p.safeCall("timer handler", func() { h(timer) })
+	p.safeCall("message handler", func() { h(msg, from) })
+}
+
+// enqueue pushes ev onto this protocol's mailbox, samples the depth
+// histogram, and — when a drop policy evicts or rejects an event —
+// increments the dropped counter and routes the loss to the runtime's
+// dead-letter hook. It returns false only when a blocking mailbox was
+// aborted by ctx (runtime shutdown), which the fanout paths use to stop
+// early. Called from every producer: the dispatcher, IPC delivery,
+// notification fanout, and timer fires.
+func (p *protoProtocol) enqueue(ctx context.Context, ev protoEvent) bool {
+	dropped, didDrop, ok := p.mailbox.push(ctx, ev)
+	if !ok {
+		return false
+	}
+	depth := p.mailbox.depth()
+	p.runtime.metrics.Histogram("protorun.mailbox.depth", float64(depth),
+		Attr{Key: "protocol", Value: p.name})
+	if didDrop {
+		p.runtime.metrics.Counter("protorun.mailbox.dropped", 1,
+			Attr{Key: "protocol", Value: p.name},
+			Attr{Key: "kind", Value: dropped.kind.String()},
+			Attr{Key: "policy", Value: p.mailbox.policy().String()})
+		p.runtime.emitDeadLetter(DeadLetter{
+			Protocol: p.name,
+			Kind:     dropped.kind.String(),
+			Peer:     dropped.peer(),
+		})
+	}
+	p.strictMailboxOccupancy(depth)
+	return true
+}
+
+// trackTimer records a live timer handle for shutdown cleanup.
+func (p *protoProtocol) trackTimer(h *timerHandle) {
+	p.timersMu.Lock()
+	p.timers[h.id] = h
+	p.timersMu.Unlock()
+}
+
+// forgetTimer drops a timer handle from the table (on cancel or on a
+// one-shot fire). Idempotent.
+func (p *protoProtocol) forgetTimer(id uint64) {
+	p.timersMu.Lock()
+	delete(p.timers, id)
+	p.timersMu.Unlock()
+}
+
+// cancelAllTimers cancels every timer this protocol still owns. Called
+// during runtime shutdown so no timer outlives the runtime.
+func (p *protoProtocol) cancelAllTimers() {
+	p.timersMu.Lock()
+	handles := make([]*timerHandle, 0, len(p.timers))
+	for _, h := range p.timers {
+		handles = append(handles, h)
+	}
+	p.timersMu.Unlock()
+	for _, h := range handles {
+		h.cancel()
+	}
 }
 
 // safeCall wraps a handler invocation in defer/recover so that a panic
@@ -482,7 +530,7 @@ func (p *protoProtocol) deliverReply(rep inboundReply) {
 		resultAttr := Attr{Key: "result", Value: replyResultLabel(rep.err)}
 		p.runtime.metrics.Counter("protorun.ipc.request.completed", 1, wireIDAttr, resultAttr)
 		p.runtime.metrics.Histogram("protorun.ipc.request.latency_ms",
-			float64(time.Since(pending.startedAt).Microseconds())/1000.0,
+			float64(p.runtime.clock.Now().Sub(pending.startedAt).Microseconds())/1000.0,
 			wireIDAttr, resultAttr)
 	}
 	pending.cb(rep.rep, rep.err)

@@ -6,9 +6,6 @@ Everything below v1.0 may break API and wire format.
 
 ## Pending (see docs/roadmap.md for designs)
 
-- [ ] Phase 0 (v0.2.0): module rename to `protorun`, unified
-      per-protocol mailbox with overflow policy, handle-based timer
-      API (`ctx.After`/`ctx.Every`), `Clock` seam.
 - [ ] Phase 1 (v0.3.0): supervision — factory registration, panic
       directives (Resume/Restart/Stop/Escalate), restart with
       session replay, restart budget + backoff.
@@ -31,6 +28,11 @@ Everything below v1.0 may break API and wire format.
 
 ## Done
 
+- [x] Phase 0 (v0.2.0): module rename to `protorun`, unified
+      per-protocol mailbox with overflow policy + dead-letter hook,
+      handle-based timer API (`ctx.After`/`ctx.Every`), `Clock` seam
+      with `prototest.FakeClock`.
+
 - [x] Handshake hardening: dialer waits for Ack before Established
       (bounded by a handshake timeout); version mismatch answered
       with an explicit Reject that the runtime translates into an
@@ -50,9 +52,10 @@ Everything below v1.0 may break API and wire format.
 - [x] Generic typed handlers (`RegisterHandler[*M]`).
 - [x] BinaryCodec for fixed-size messages; `wire` helpers for
       variable-length.
-- [x] Per-protocol event-loop concurrency.
-- [x] Timer system: `SetupTimer`, `SetupPeriodicTimer`,
-      `CancelTimer`, `RegisterTimerHandler`.
+- [x] Per-protocol event-loop concurrency over one ordered mailbox
+      with a per-protocol overflow policy (`WithMailbox`).
+- [x] Handle-based timer system: `ctx.After` / `ctx.Every` returning
+      a cancellable `TimerHandle`, over a `Clock` seam.
 - [x] Reconnect policy with exponential backoff + jitter
       (`ConnectWithRetry`).
 - [x] Inter-protocol communication: Request/Reply via

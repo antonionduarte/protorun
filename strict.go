@@ -141,16 +141,44 @@ func (p *protoProtocol) strictWatchdog(where string) func() {
 		return func() {}
 	}
 	threshold := p.runtime.strictHandlerTimeout
-	timer := time.AfterFunc(threshold, func() {
+	timer := p.runtime.clock.AfterFunc(threshold, func() {
 		p.runtime.metrics.Counter("protorun.strict.slow_handler", 1,
 			Attr{Key: "where", Value: where},
-			Attr{Key: "protocol", Value: fmt.Sprintf("%T", p.protocol)})
+			Attr{Key: "protocol", Value: p.name})
 		p.runtime.Logger().Error("protorun strict: handler exceeded threshold",
 			"where", where,
 			"threshold", threshold,
-			"protocol", fmt.Sprintf("%T", p.protocol))
+			"protocol", p.name)
 	})
 	return func() { timer.Stop() }
+}
+
+// strictMailboxOccupancy warns, at most once per second per protocol,
+// when the mailbox crosses 80% of its capacity on enqueue. Off unless
+// strict mode is enabled; skipped entirely for OverflowUnbounded, whose
+// capacity() is 0. Rate-limited via a CAS on the last-warn timestamp so
+// a hot producer doesn't flood the log.
+func (p *protoProtocol) strictMailboxOccupancy(depth int) {
+	if p.runtime == nil || !p.runtime.strict {
+		return
+	}
+	capacity := p.mailbox.capacity()
+	if capacity <= 0 || depth*100 < capacity*80 {
+		return
+	}
+	now := p.runtime.clock.Now().UnixNano()
+	last := p.lastMailboxWarn.Load()
+	if now-last < int64(time.Second) {
+		return
+	}
+	if !p.lastMailboxWarn.CompareAndSwap(last, now) {
+		return // another goroutine just warned
+	}
+	p.runtime.Logger().Warn("protorun strict: mailbox occupancy above 80%",
+		"protocol", p.name,
+		"depth", depth,
+		"capacity", capacity,
+		"policy", p.mailbox.policy().String())
 }
 
 // strictReplyWithoutHandler is invoked by deliverReply when an inbound

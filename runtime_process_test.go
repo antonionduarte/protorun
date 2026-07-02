@@ -34,13 +34,15 @@ func TestProcessMessage_DispatchesToHandler(t *testing.T) {
 	frame := processFrame(t, WireID[*localMessage](), nil)
 	rt.processMessage(frame, transport.NewHost(9999, "127.0.0.1"))
 
-	select {
-	case env := <-proto.messageChannel:
-		if _, ok := env.msg.(*localMessage); !ok {
-			t.Fatalf("expected *localMessage, got %T", env.msg)
-		}
-	case <-time.After(time.Second):
-		t.Fatalf("expected a message to be dispatched to proto.messageChannel")
+	ev, ok := recvEvent(proto, time.Second)
+	if !ok {
+		t.Fatalf("expected a message to be dispatched to proto's mailbox")
+	}
+	if ev.kind != evMessage {
+		t.Fatalf("expected a message event, got kind=%v", ev.kind)
+	}
+	if _, ok := ev.msg.(*localMessage); !ok {
+		t.Fatalf("expected *localMessage, got %T", ev.msg)
 	}
 }
 
@@ -65,11 +67,8 @@ func TestProcessMessage_DecodeError(t *testing.T) {
 	frame := processFrame(t, WireID[*failingMessageBM](), nil)
 	rt.processMessage(frame, transport.NewHost(9999, "127.0.0.1"))
 
-	select {
-	case env := <-proto.messageChannel:
-		t.Fatalf("did not expect a message to be dispatched when Decode fails, got %+v", env)
-	default:
-		// ok
+	if ev, ok := recvEvent(proto, 50*time.Millisecond); ok {
+		t.Fatalf("did not expect a message to be dispatched when Decode fails, got %+v", ev)
 	}
 }
 

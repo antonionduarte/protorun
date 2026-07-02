@@ -25,7 +25,7 @@ gate: everything below done, wire format frozen.
 The four changes that touch everything. Done first, together, so the
 rest of the plan builds on the final shapes.
 
-### 0.1 Module rename — done (GitHub repo rename still pending)
+### 0.1 Module rename — done
 
 Module path is now `github.com/antonionduarte/protorun` (see
 CHANGELOG.md for the previous path). The core package is promoted to
@@ -43,11 +43,17 @@ third-party dep (protobuf codec, QUIC transport, OTel adapter, YAML
 config) becomes a nested module with its own go.mod (`codec/protobuf`,
 `transport/quic`, `otel`, `config`).
 
-Renaming the GitHub repository itself (old name should redirect) is
-still outstanding — deliberately left for a deployment step outside
-this pass.
+The GitHub repository is renamed to `antonionduarte/protorun`; the
+old name redirects.
 
-### 0.2 Unified mailbox + backpressure policy
+### 0.2 Unified mailbox + backpressure policy — done
+
+Delivered: one ordered mailbox per protocol carrying a tagged
+`protoEvent` union; `Register` grows `WithMailbox(Mailbox{Capacity,
+Overflow})` with `OverflowBlock` (default) / `DropOldest` /
+`DropNewest` / `Unbounded`; `WithDeadLetter` hook; `protorun.mailbox.
+depth` + `protorun.mailbox.dropped` metrics; strict-mode 80%-occupancy
+warning. Design record below.
 
 Today each protocol has six buffered channels (messages, timers,
 session events, requests, replies, notifications) drained by one
@@ -88,7 +94,13 @@ New metrics: `protorun.mailbox.depth` (histogram, sampled on
 enqueue), `protorun.mailbox.dropped`. Strict mode warns on sustained
 >80% occupancy.
 
-### 0.3 Timer API redesign
+### 0.3 Timer API redesign — done
+
+Delivered: `ctx.After` / `ctx.Every` returning a `TimerHandle` with an
+idempotent, fire-safe, same-loop-safe `Cancel`; monotonic-`uint64`
+keys; per-protocol handle tracking with cancel-all on shutdown. The
+old `Timer`/`TimerID`/`SetupTimer`/`SetupPeriodicTimer`/`CancelTimer`/
+`RegisterTimerHandler` surface is removed. Design record below.
 
 The current surface (`Timer` interface, user-managed `TimerID() int`
 uniqueness, `RegisterTimerHandler`, silent overwrite on ID reuse) is
@@ -113,7 +125,14 @@ h.Cancel()                                            // idempotent
 `Timing`, `Timer`, `SetupTimer`, `SetupPeriodicTimer`, `CancelTimer`,
 `RegisterTimerHandler` are removed, not deprecated.
 
-### 0.4 Clock seam
+### 0.4 Clock seam — done
+
+Delivered: a `Clock` interface (`Now` / `AfterFunc` / `NewTicker`)
+consumed by the timer table, retry backoff, request timeouts, the
+strict watchdog, and IPC latency; `WithClock` option over a zero-
+allocation real-time default; `prototest.FakeClock` with `Advance`.
+`prototest.NewRuntime` still uses the real clock — the default switch
+lands in Phase 4. Design record below.
 
 Introduce a `Clock` interface consumed by the timer table, retry
 backoff, request timeouts, and the strict-mode watchdog:

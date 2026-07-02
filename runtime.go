@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -39,17 +40,28 @@ var (
 )
 
 type Runtime struct {
-	self                  transport.Host
-	ctx                   context.Context
-	cancelFunc            func()
-	timerMutex            sync.Mutex
-	wg                    sync.WaitGroup
-	ongoingTimers         map[int]*time.Timer
-	ongoingPeriodicTimers map[int]context.CancelFunc
+	self       transport.Host
+	ctx        context.Context
+	cancelFunc func()
+	wg         sync.WaitGroup
 
-	protocols          []*protoProtocol
-	codecs             *codecRegistry
-	protoChannelBuffer int // 0 means use defaultProtoChannelBuffer
+	// clock is the time source for the timer table, retry backoff,
+	// request-timeout arming, the strict watchdog, and IPC latency. The
+	// default is realClock; WithClock swaps it for deterministic tests.
+	clock Clock
+
+	// nextTimerID mints the runtime-monotonic ids that key timer
+	// handles. No user-managed ids, so there is no uniqueness contract
+	// and no silent replacement.
+	nextTimerID atomic.Uint64
+
+	// deadLetter, when set via WithDeadLetter, receives events dropped
+	// by drop-policy mailboxes. Called synchronously on the enqueuing
+	// goroutine.
+	deadLetter func(DeadLetter)
+
+	protocols []*protoProtocol
+	codecs    *codecRegistry
 
 	retryPolicy       RetryPolicy
 	retryMu           sync.Mutex
@@ -119,18 +131,6 @@ func WithLogger(logger *slog.Logger) Option {
 	}
 }
 
-// WithChannelBuffer overrides the per-protocol channel buffer size used
-// by each registered protocol's message, timer, and session-event
-// channels. A non-positive value is ignored; the framework default
-// (defaultProtoChannelBuffer) applies.
-func WithChannelBuffer(n int) Option {
-	return func(r *Runtime) {
-		if n > 0 {
-			r.protoChannelBuffer = n
-		}
-	}
-}
-
 // New constructs a Runtime bound to the given local Host. Protocols, the
 // transport layer, and the session layer must be registered before calling
 // Start. The runtime context is created here, so Cancel works regardless
@@ -138,16 +138,15 @@ func WithChannelBuffer(n int) Option {
 func New(self transport.Host, opts ...Option) *Runtime {
 	ctx, cancel := context.WithCancel(context.Background())
 	r := &Runtime{
-		self:                  self,
-		ctx:                   ctx,
-		cancelFunc:            cancel,
-		ongoingTimers:         make(map[int]*time.Timer),
-		ongoingPeriodicTimers: make(map[int]context.CancelFunc),
-		codecs:                newCodecRegistry(),
-		connectionRetries:     make(map[transport.Host]*retryState),
-		ipc:                   newIPCRouter(),
-		logger:                slog.Default().With("component", "runtime"),
-		metrics:               noopMetrics{},
+		self:              self,
+		ctx:               ctx,
+		cancelFunc:        cancel,
+		clock:             realClock{},
+		codecs:            newCodecRegistry(),
+		connectionRetries: make(map[transport.Host]*retryState),
+		ipc:               newIPCRouter(),
+		logger:            slog.Default().With("component", "runtime"),
+		metrics:           noopMetrics{},
 	}
 	for _, opt := range opts {
 		opt(r)
@@ -208,12 +207,33 @@ func (r *Runtime) registerSessionLayer(sessionLayer Sessions) {
 	r.sessionLayer = sessionLayer
 }
 
-// Register wraps the user's Protocol implementation in a protoProtocol
-// envelope and attaches it to this runtime. The protocol's per-channel
-// buffer size comes from the runtime's WithChannelBuffer option (or the
-// framework default if none was supplied).
-func (r *Runtime) Register(impl Protocol) {
-	r.registerProtocol(newProtoProtocol(impl, r.protoChannelBuffer))
+// RegisterOption configures a single protocol at registration time.
+type RegisterOption func(*registerConfig)
+
+// registerConfig accumulates per-protocol registration settings. Its
+// zero value is not valid; Register seeds the defaults before applying
+// options.
+type registerConfig struct {
+	mailbox Mailbox
+}
+
+// WithMailbox overrides the registering protocol's mailbox capacity and
+// overflow policy. Without it, the protocol gets an OverflowBlock
+// mailbox of defaultMailboxCapacity.
+func WithMailbox(m Mailbox) RegisterOption {
+	return func(c *registerConfig) { c.mailbox = m }
+}
+
+// Register wraps the user's Protocol in a protoProtocol envelope and
+// attaches it to this runtime. Without options the protocol gets a
+// default mailbox (capacity defaultMailboxCapacity, OverflowBlock);
+// WithMailbox tunes it.
+func (r *Runtime) Register(impl Protocol, opts ...RegisterOption) {
+	cfg := registerConfig{mailbox: Mailbox{Capacity: defaultMailboxCapacity, Overflow: OverflowBlock}}
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+	r.registerProtocol(newProtoProtocolMailbox(impl, cfg.mailbox))
 }
 
 // registerProtocol attaches an already-constructed protoProtocol to this
@@ -265,10 +285,10 @@ func (r *Runtime) disconnect(host transport.Host) error {
 // methods (Reply / Fail) and time.AfterFunc timeout callbacks both
 // end up here.
 func (r *Runtime) deliverReply(token replyToken, rep Reply, err error) {
-	select {
-	case token.requester.replyEvents <- inboundReply{requestID: token.requestID, rep: rep, err: err}:
-	case <-r.ctx.Done():
-	}
+	token.requester.enqueue(r.ctx, protoEvent{
+		kind: evReply,
+		aux:  &eventAux{reply: inboundReply{requestID: token.requestID, rep: rep, err: err}},
+	})
 }
 
 // sendRequest is the requester-side internal entry point. It allocates
@@ -290,7 +310,7 @@ func (r *Runtime) sendRequest(
 	wireIDAttr := Attr{Key: "wireID", Value: fmt.Sprintf("%#x", wireID)}
 	r.metrics.Counter("protorun.ipc.request.sent", 1, wireIDAttr)
 
-	now := time.Now()
+	now := r.clock.Now()
 	requester.pendingMu.Lock()
 	requester.pending[requestID] = pendingRequest{
 		cb:        onReply,
@@ -306,14 +326,14 @@ func (r *Runtime) sendRequest(
 		return
 	}
 
-	time.AfterFunc(timeout, func() {
+	r.clock.AfterFunc(timeout, func() {
 		r.deliverReply(token, nil, ErrRequestTimeout)
 	})
 
-	select {
-	case route.proto.requestEvents <- inboundRequest{req: req, token: token, handler: route.handler}:
-	case <-r.ctx.Done():
-	}
+	route.proto.enqueue(r.ctx, protoEvent{
+		kind: evRequest,
+		aux:  &eventAux{request: inboundRequest{req: req, token: token, handler: route.handler}},
+	})
 }
 
 // subscribeNotification / unsubscribeNotification / publishNotification
@@ -338,24 +358,36 @@ func (r *Runtime) publishNotification(wireID uint64, n Notification) {
 	r.metrics.Counter("protorun.notification.published", 1, wireIDAttr)
 
 	for _, sub := range r.ipc.SnapshotSubscribers(wireID) {
-		select {
-		case sub.proto.notificationEvents <- inboundNotification{n: n, handler: sub.fn}:
-			r.metrics.Counter("protorun.notification.delivered", 1, wireIDAttr)
-		case <-r.ctx.Done():
+		if !sub.proto.enqueue(r.ctx, protoEvent{
+			kind: evNotification,
+			aux:  &eventAux{notif: inboundNotification{n: n, handler: sub.fn}},
+		}) {
 			return
 		}
+		r.metrics.Counter("protorun.notification.delivered", 1, wireIDAttr)
+	}
+}
+
+// emitDeadLetter hands dl to the runtime's dead-letter hook, if one was
+// configured via WithDeadLetter. Called synchronously from the enqueue
+// path when a drop-policy mailbox evicts or rejects an event.
+func (r *Runtime) emitDeadLetter(dl DeadLetter) {
+	if r.deadLetter != nil {
+		r.deadLetter(dl)
 	}
 }
 
 func (r *Runtime) Cancel() {
 	// Cancel tears down the runtime in the following order:
-	//   1. Mark every protocol cancelled (strict-mode phase tracking).
+	//   1. Mark every protocol cancelled (strict-mode phase tracking)
+	//      and cancel every timer it owns.
 	//   2. Cancel the runtime context (used by all internal goroutines).
 	//   3. Stop session and transport layers.
-	//   4. Stop and clear all timers.
+	//   4. Tear down the retry table.
 	//   5. Wait for all goroutines to finish via the WaitGroup.
 	for _, p := range r.protocols {
 		p.setPhase(phaseCancelled)
+		p.cancelAllTimers()
 	}
 	r.cancelFunc()
 	if r.sessionLayer != nil {
@@ -364,20 +396,6 @@ func (r *Runtime) Cancel() {
 	if r.networkLayer != nil {
 		r.networkLayer.Cancel()
 	}
-	r.timerMutex.Lock()
-	for id, t := range r.ongoingTimers {
-		if t != nil {
-			t.Stop()
-		}
-		delete(r.ongoingTimers, id)
-	}
-	for id, cancel := range r.ongoingPeriodicTimers {
-		if cancel != nil {
-			cancel()
-		}
-		delete(r.ongoingPeriodicTimers, id)
-	}
-	r.timerMutex.Unlock()
 
 	r.retryTeardown()
 
@@ -513,9 +531,7 @@ func (r *Runtime) dispatchSessionEvent(ctx context.Context, ev transport.Session
 // caller. Returns false on ctx cancellation.
 func (r *Runtime) fanoutSessionEvent(ctx context.Context, ev sessionEvent) bool {
 	for _, proto := range r.protocols {
-		select {
-		case proto.sessionEvents <- ev:
-		case <-ctx.Done():
+		if !proto.enqueue(ctx, protoEvent{kind: evSession, aux: &eventAux{session: ev}}) {
 			return false
 		}
 	}
@@ -568,14 +584,7 @@ func (r *Runtime) processMessage(buffer bytes.Buffer, from transport.Host) {
 		"wireID", fmt.Sprintf("%#x", wireID),
 	)
 	r.metrics.Counter("protorun.message.dispatched", 1, wireIDAttr)
-	ctx := r.ctx
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	select {
-	case protocol.messageChannel <- messageEnvelope{msg: message, from: from}:
-	case <-ctx.Done():
-	}
+	protocol.enqueue(r.ctx, protoEvent{kind: evMessage, msg: message, from: from})
 }
 
 // WithTCPTransport wires the runtime's transport + session layers with

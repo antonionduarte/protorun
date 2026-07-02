@@ -21,6 +21,10 @@ package protorun
 //	where     panic call-site tag ("message handler", ...).
 //	result    terminal status of an IPC request: "completed",
 //	          "timeout", "no_handler", "responder_failed".
+//	kind      mailbox event kind for a dropped event ("message",
+//	          "timer", "session", "request", "reply", "notification").
+//	policy    mailbox overflow policy ("block", "drop_oldest",
+//	          "drop_newest", "unbounded").
 //
 // Names use the prefix "protorun." for everything the framework
 // emits so users can route them with a single label/regex.

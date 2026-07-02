@@ -121,7 +121,7 @@ func TestRuntime_RapidStartCancel(t *testing.T) {
 		if err := rt.start(); err != nil {
 			t.Fatalf("iteration %d: Start failed: %v", i, err)
 		}
-		rt.setupPeriodicTimer(proto, &rapidTickTimer{id: 1}, time.Millisecond)
+		rt.every(proto, time.Millisecond, func() {})
 		time.Sleep(5 * time.Millisecond)
 
 		done := make(chan struct{})
@@ -136,7 +136,3 @@ func TestRuntime_RapidStartCancel(t *testing.T) {
 		}
 	}
 }
-
-type rapidTickTimer struct{ id int }
-
-func (t *rapidTickTimer) TimerID() int { return t.id }

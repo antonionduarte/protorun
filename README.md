@@ -169,11 +169,44 @@ protorun.SubscribeNotification(ctx, func(ev ViewChanged) { ... })
 protorun.PublishNotification(ctx, ViewChanged{Added: peer})
 ```
 
+### Timers
+
+Schedule work on the protocol's own event loop with `After` (one-shot)
+and `Every` (periodic). Both return a `TimerHandle`; `Cancel` is
+idempotent, safe after the timer fired, and safe to call from inside a
+handler.
+
+```go
+h := ctx.After(500*time.Millisecond, func() { /* runs on the loop */ })
+ctx.Every(time.Second, p.tick)
+h.Cancel()
+```
+
+The payload rides along by closure capture — no timer struct, no
+user-managed IDs. All of a protocol's timers are cancelled
+automatically on shutdown.
+
 ### Concurrency model
 
-Each protocol gets one goroutine that pulls events off its mailbox and
-dispatches them sequentially. Handlers can mutate protocol state without
+Each protocol gets one goroutine that pulls events off its single
+ordered mailbox and dispatches them sequentially. Messages, timers,
+session events, and IPC all share that one queue, so arrival order is
+delivery order across kinds. Handlers can mutate protocol state without
 locking, as long as access stays inside the handlers.
+
+The mailbox capacity and overflow behaviour are set per protocol at
+registration:
+
+```go
+rt.Register(p, protorun.WithMailbox(protorun.Mailbox{
+    Capacity: 1024,                   // default
+    Overflow: protorun.OverflowBlock, // Block | DropOldest | DropNewest | Unbounded
+}))
+```
+
+`OverflowBlock` (default) backpressures the producer; the drop policies
+route evicted events to a `WithDeadLetter` hook; `OverflowUnbounded`
+never blocks but can grow without limit.
 
 Public methods you expose on your protocol (for example an `enqueue(...)`
 method called from another protocol's goroutine or the application's main

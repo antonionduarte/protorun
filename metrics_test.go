@@ -132,7 +132,7 @@ func TestMetrics_RecordsLatencyHistogram(t *testing.T) {
 	rec := newRecordingMetrics()
 
 	self := transport.NewHost(0, "127.0.0.1")
-	rt := New(self, WithMetrics(rec), WithChannelBuffer(256))
+	rt := New(self, WithMetrics(rec))
 	_ = registerMockStack(rt, self)
 
 	server := newProtoProtocol(&MockProtocol{}, 256)

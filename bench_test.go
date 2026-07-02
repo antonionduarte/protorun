@@ -2,6 +2,7 @@ package protorun
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"sync"
 	"testing"
@@ -56,7 +57,7 @@ func BenchmarkWireID(b *testing.B) {
 
 // BenchmarkProcessMessage measures end-to-end inbound dispatch:
 // encode the wireID, decode, push onto the protocol's mailbox.
-// A drainer goroutine keeps the channel from filling up so we measure
+// A drainer goroutine keeps the mailbox from filling up so we measure
 // the dispatch path itself, not back-pressure.
 func BenchmarkProcessMessage(b *testing.B) {
 	self := transport.NewHost(0, "127.0.0.1")
@@ -81,13 +82,11 @@ func BenchmarkProcessMessage(b *testing.B) {
 
 	sender := transport.NewHost(0, "127.0.0.1")
 
-	stop := make(chan struct{})
+	drainCtx, stopDrain := context.WithCancel(context.Background())
 	var drained sync.WaitGroup
 	drained.Go(func() {
 		for {
-			select {
-			case <-proto.messageChannel:
-			case <-stop:
+			if _, ok := proto.mailbox.next(drainCtx); !ok {
 				return
 			}
 		}
@@ -98,13 +97,13 @@ func BenchmarkProcessMessage(b *testing.B) {
 		rt.processMessage(*buf, sender)
 	}
 	b.StopTimer()
-	close(stop)
+	stopDrain()
 	drained.Wait()
 }
 
 // BenchmarkPublishNotification_Fanout measures notification fanout
 // with varying subscriber counts. Subscriber's handler is empty; the
-// cost is the runtime's per-subscriber channel send.
+// cost is the runtime's per-subscriber mailbox enqueue.
 func BenchmarkPublishNotification_Fanout(b *testing.B) {
 	for _, n := range []int{1, 10, 100} {
 		b.Run(fmtCount(n), func(b *testing.B) {
@@ -119,7 +118,6 @@ func benchPublish(b *testing.B, subscribers int) {
 	session := transport.NewSessionLayer(mock, self, b.Context(), 0, 0)
 	rt := New(self,
 		WithTransport(mock, session),
-		WithChannelBuffer(b.N+1),
 	)
 
 	publisher := newProtoProtocol(&MockProtocol{}, b.N+1)
@@ -168,7 +166,6 @@ func BenchmarkSendRequest(b *testing.B) {
 	session := transport.NewSessionLayer(mock, self, b.Context(), 0, 0)
 	rt := New(self,
 		WithTransport(mock, session),
-		WithChannelBuffer(b.N+1),
 	)
 
 	server := newProtoProtocol(&MockProtocol{}, b.N+1)

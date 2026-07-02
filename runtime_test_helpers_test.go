@@ -3,9 +3,19 @@ package protorun
 import (
 	"context"
 	"sync/atomic"
+	"time"
 
 	"github.com/antonionduarte/protorun/transport"
 )
+
+// recvEvent pops the next event from a protocol's mailbox, waiting up to
+// timeout. ok is false if nothing arrived in time. Used by tests that
+// inspect what the runtime enqueued without starting the event loop.
+func recvEvent(proto *protoProtocol, timeout time.Duration) (protoEvent, bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	return proto.mailbox.next(ctx)
+}
 
 // registerMockStack wires rt with the standard in-package fixture: a
 // MockNetworkLayer wrapped in a real SessionLayer bound to self. This

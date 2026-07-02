@@ -78,28 +78,20 @@ type BroadcastAck struct {
 	protorun.BaseReply
 }
 
-// periodicTick is the Timer marker for the optional periodic
-// broadcast. The runtime keys handlers by TimerID, scoped to the
-// owning protocol, so any constant int will do.
-type periodicTick struct{}
-
-func (periodicTick) TimerID() int { return 1 }
-
 func (p *Protocol) Start(ctx protorun.ProtocolContext) {
 	p.ctx = ctx
 	protorun.RegisterCodec(ctx, Codec{})
 	protorun.RegisterHandler(ctx, p.handleInbound)
 	protorun.SubscribeNotification(ctx, p.handleViewChanged)
 	protorun.RegisterRequestHandler(ctx, p.handleBroadcast)
-	if p.periodicEnabled() {
-		ctx.RegisterTimerHandler(periodicTick{}, p.handlePeriodicTick)
-	}
 }
 
 func (p *Protocol) Init(ctx protorun.ProtocolContext) {
 	protorun.SendRequest(ctx, &membership.GetView{}, p.handleInitialView)
 	if p.periodicEnabled() {
-		ctx.SetupPeriodicTimer(periodicTick{}, p.periodicInterval)
+		// The runtime cancels this handle automatically on shutdown; the
+		// gossip protocol has no reason to stop it earlier.
+		ctx.Every(p.periodicInterval, p.handlePeriodicTick)
 	}
 }
 
@@ -112,7 +104,7 @@ func (p *Protocol) handleBroadcast(req *TriggerBroadcast, r protorun.Responder[*
 	r.Reply(&BroadcastAck{})
 }
 
-func (p *Protocol) handlePeriodicTick(_ protorun.Timer) {
+func (p *Protocol) handlePeriodicTick() {
 	p.disseminate(p.periodicPayload())
 }
 

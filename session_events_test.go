@@ -64,19 +64,22 @@ func TestDispatchSessionEvent_DialRejected_TerminalGivenUp(t *testing.T) {
 		t.Errorf("expected retry state to be terminated by the Reject")
 	}
 
-	select {
-	case got := <-rt.protocols[0].sessionEvents:
-		if got.kind != sessionGivenUpEvent {
-			t.Errorf("expected sessionGivenUpEvent fanout, got kind=%v", got.kind)
-		}
-		if got.host != peer {
-			t.Errorf("expected given-up host %v, got %v", peer, got.host)
-		}
-		if got.attempts != 3 {
-			t.Errorf("expected attempts=3, got %d", got.attempts)
-		}
-	case <-time.After(time.Second):
+	queued, ok := recvEvent(rt.protocols[0], time.Second)
+	if !ok {
 		t.Fatalf("expected a given-up fanout to the protocol")
+	}
+	if queued.kind != evSession {
+		t.Fatalf("expected a session event, got kind=%v", queued.kind)
+	}
+	got := queued.aux.session
+	if got.kind != sessionGivenUpEvent {
+		t.Errorf("expected sessionGivenUpEvent fanout, got kind=%v", got.kind)
+	}
+	if got.host != peer {
+		t.Errorf("expected given-up host %v, got %v", peer, got.host)
+	}
+	if got.attempts != 3 {
+		t.Errorf("expected attempts=3, got %d", got.attempts)
 	}
 
 	if n := metrics.totalCounter("protorun.session.version_mismatch"); n != 1 {
@@ -101,10 +104,8 @@ func TestDispatchSessionEvent_InboundMismatch_NoFanout(t *testing.T) {
 		t.Fatalf("dispatchSessionEvent reported ctx cancellation")
 	}
 
-	select {
-	case got := <-rt.protocols[0].sessionEvents:
-		t.Fatalf("expected no fanout for inbound mismatch, got kind=%v", got.kind)
-	default:
+	if ev, ok := recvEvent(rt.protocols[0], 50*time.Millisecond); ok {
+		t.Fatalf("expected no fanout for inbound mismatch, got kind=%v", ev.kind)
 	}
 
 	if n := metrics.totalCounter("protorun.session.version_mismatch"); n != 1 {

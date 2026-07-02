@@ -78,8 +78,8 @@ type SessionGivenUpHandler interface {
 // retryState tracks an in-flight retry schedule for one peer.
 type retryState struct {
 	policy  RetryPolicy
-	attempt int         // number of failed attempts so far
-	timer   *time.Timer // the pending backoff timer, if any
+	attempt int        // number of failed attempts so far
+	timer   ClockTimer // the pending backoff timer, if any
 }
 
 // connectWithRetry registers retry intent for host and issues the
@@ -148,7 +148,7 @@ func (r *Runtime) onSessionDownForRetry(host transport.Host) (giveUp bool, attem
 		"attempt", st.attempt,
 		"delay", delay,
 	)
-	st.timer = time.AfterFunc(delay, func() {
+	st.timer = r.clock.AfterFunc(delay, func() {
 		// Re-check state on fire: another caller may have cleared us.
 		r.retryMu.Lock()
 		_, stillTracked := r.connectionRetries[host]
