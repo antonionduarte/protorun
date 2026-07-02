@@ -1,7 +1,6 @@
 package protorun
 
 import (
-	"context"
 	"errors"
 	"testing"
 	"time"
@@ -15,9 +14,7 @@ import (
 func TestShutdown_CompletesUnderTimeout(t *testing.T) {
 	self := transport.NewHost(0, "127.0.0.1")
 	rt := New(self)
-	mock := NewMockNetworkLayer()
-	rt.registerNetworkLayer(mock)
-	rt.registerSessionLayer(transport.NewSessionLayer(mock, self, context.Background(), 0, 0))
+	mock := registerMockStack(rt, self)
 
 	if err := rt.start(); err != nil {
 		t.Fatalf("start: %v", err)
@@ -37,9 +34,7 @@ func TestShutdown_CompletesUnderTimeout(t *testing.T) {
 func TestShutdown_ZeroTimeoutUsesDefault(t *testing.T) {
 	self := transport.NewHost(0, "127.0.0.1")
 	rt := New(self)
-	mock := NewMockNetworkLayer()
-	rt.registerNetworkLayer(mock)
-	rt.registerSessionLayer(transport.NewSessionLayer(mock, self, context.Background(), 0, 0))
+	_ = registerMockStack(rt, self)
 
 	if err := rt.start(); err != nil {
 		t.Fatalf("start: %v", err)
@@ -57,9 +52,7 @@ func TestShutdown_ZeroTimeoutUsesDefault(t *testing.T) {
 func TestShutdown_TimeoutSentinel(t *testing.T) {
 	self := transport.NewHost(0, "127.0.0.1")
 	rt := New(self)
-	mock := NewMockNetworkLayer()
-	rt.registerNetworkLayer(mock)
-	rt.registerSessionLayer(transport.NewSessionLayer(mock, self, context.Background(), 0, 0))
+	_ = registerMockStack(rt, self)
 
 	stuck := newProtoProtocol(&MockProtocol{}, 0)
 	rt.registerProtocol(stuck)

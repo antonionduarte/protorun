@@ -9,7 +9,7 @@ import (
 // serializeMessage and deserializeMessage form a
 // round-trip for both application and session messages.
 func TestSerializeDeserializeMessage_RoundTrip(t *testing.T) {
-	host := NewHost(9000, "127.0.0.1")
+	host := NewHost(6609, "127.0.0.1")
 
 	// Application message body: arbitrary payload
 	appPayload := *bytes.NewBuffer([]byte{0xAA, 0xBB, 0xCC})

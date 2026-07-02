@@ -20,6 +20,16 @@ were completed during the polish passes leading up to v0.1.0.
 
 ## Done
 
+- [x] Handshake hardening: dialer waits for Ack before Established
+      (bounded by a handshake timeout); version mismatch answered
+      with an explicit Reject that the runtime translates into an
+      immediate terminal `OnSessionGivenUp`. Authoritative wire spec
+      in `docs/wire-format.md`.
+- [x] `Sessions` seam: the runtime holds its session stack behind
+      `protorun.Sessions`; `*transport.SessionLayer` is the
+      production adapter.
+- [x] `pkg/prototest`: exported in-memory mesh + runtime fixture so
+      protocol authors can test protocols without TCP.
 - [x] Basic structure (Protocol, Runtime, ProtocolContext).
 - [x] TCP transport layer with length-prefixed framing.
 - [x] SessionLayer with Hello/Ack handshake binding ephemeral

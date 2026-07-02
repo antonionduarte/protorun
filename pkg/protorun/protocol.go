@@ -82,35 +82,21 @@ type (
 	// Codec and message-handler registration is done via the typed
 	// generic helpers RegisterCodec[M] / RegisterHandler[M] / the IPC
 	// helpers in ipc.go, which reach the framework through the
-	// unexported methods on this interface.
+	// binding() hook below.
 	ProtocolContext interface {
 		Connector
 		Sender
 		Timing
 		Identity
 
-		// Internal hooks used by RegisterCodec[M] and RegisterHandler[M].
-		// Defined as unexported methods so only the runtime package can
-		// implement ProtocolContext.
-		registerCodec(wireID uint64, c codec)
-		registerHandler(wireID uint64, fn func(Message, transport.Host))
-
-		// Internal hooks used by the IPC API in ipc.go. Same rationale:
-		// generic methods aren't allowed on interfaces, so the typed
-		// helpers route through these unexported methods.
-		registerRequestHandler(wireID uint64, fn func(Request, replyToken))
-		sendRequest(wireID uint64, req Request, timeout time.Duration, onReply func(Reply, error))
-		subscribeNotification(wireID uint64, fn func(Notification))
-		unsubscribeNotification(wireID uint64)
-		publishNotification(wireID uint64, n Notification)
-		deliverReplyToToken(token replyToken, rep Reply, err error)
-		runtimePtr() *Runtime
-
-		// reportPanic is the panic-handling hook used by the IPC
-		// request-handler wrapper, which has its own recover() to
-		// auto-fail the responder before the panic escapes into the
-		// event-loop dispatcher.
-		reportPanic(where string, rec any, stack []byte)
+		// binding returns the concrete per-protocol binding that anchors
+		// the typed generic helpers (RegisterCodec[M], RegisterHandler[M],
+		// SendRequest[Req, Rep], ...). Generic methods aren't allowed on
+		// Go interfaces, so the helpers take a ProtocolContext and reach
+		// the framework's registration and IPC plumbing through this
+		// single unexported hook — which also seals the interface to
+		// this package.
+		binding() *protocolContext
 	}
 
 	// Protocol describes a user protocol that can be hosted by the
@@ -136,7 +122,6 @@ type (
 		replyEvents        chan inboundReply
 		notificationEvents chan inboundNotification
 
-		codecs        map[uint64]codec
 		handlers      map[uint64]func(Message, transport.Host)
 		timerHandlers map[int]func(timer Timer)
 
@@ -191,7 +176,6 @@ func newProtoProtocol(protocol Protocol, buf int) *protoProtocol {
 		requestEvents:      make(chan inboundRequest, buf),
 		replyEvents:        make(chan inboundReply, buf),
 		notificationEvents: make(chan inboundNotification, buf),
-		codecs:             make(map[uint64]codec),
 		handlers:           make(map[uint64]func(Message, transport.Host)),
 		timerHandlers:      make(map[int]func(timer Timer)),
 		pending:            make(map[uint64]pendingRequest),
@@ -296,12 +280,12 @@ func (c *protocolContext) registerCodec(wireID uint64, codec codec) {
 			strictPanic("RegisterCodec for wireID=%#x called twice", wireID)
 		}
 	}
-	c.proto.codecs[wireID] = codec
 	// Make this protocol the routing target for the wire id on the
-	// runtime-level lookup table. RegisterCodec should be called once
-	// per (protocol, message-type) pair; if two protocols register the
+	// runtime-level lookup table, together with the codec — one atomic
+	// registration step. RegisterCodec should be called once per
+	// (protocol, message-type) pair; if two protocols register the
 	// same wire id, the last one wins (and the operator should investigate).
-	c.runtime.codecs.Set(wireID, c.proto)
+	c.runtime.codecs.Set(wireID, c.proto, codec)
 }
 
 func (c *protocolContext) registerHandler(wireID uint64, fn func(Message, transport.Host)) {
@@ -314,11 +298,11 @@ func (c *protocolContext) registerHandler(wireID uint64, fn func(Message, transp
 	c.proto.handlers[wireID] = fn
 }
 
-// runtimePtr is the unexported escape hatch from ProtocolContext to its
-// hosting Runtime. Used by IPC primitives that need to reach the
-// runtime-level routing tables without re-resolving via the codec
-// lookup path.
-func (c *protocolContext) runtimePtr() *Runtime { return c.runtime }
+// binding anchors the typed generic helpers: they take a
+// ProtocolContext and reach the framework's plumbing (registration,
+// IPC, panic reporting) through the concrete binding rather than
+// through interface methods.
+func (c *protocolContext) binding() *protocolContext { return c }
 
 // registerRequestHandler installs fn as the request handler for wireID
 // runtime-wide and points the runtime's request-routing table at this
@@ -549,7 +533,7 @@ func (p *protoProtocol) deliverSessionEvent(ev sessionEvent) {
 // flows through ctx.registerCodec internally. Wire id derives from
 // M's Go type name (or M.WireName() if implemented).
 func RegisterCodec[M Message](ctx ProtocolContext, c Codec[M]) {
-	ctx.registerCodec(WireID[M](), codecAdapter[M]{c: c})
+	ctx.binding().registerCodec(WireID[M](), codecAdapter[M]{c: c})
 }
 
 // RegisterHandler registers fn as the handler for messages of type M
@@ -559,7 +543,7 @@ func RegisterCodec[M Message](ctx ProtocolContext, c Codec[M]) {
 // RegisterCodec, since generic methods aren't allowed on interfaces.
 // The framework performs the type assertion before invoking fn.
 func RegisterHandler[M Message](ctx ProtocolContext, fn func(M, transport.Host)) {
-	ctx.registerHandler(WireID[M](), func(raw Message, from transport.Host) {
+	ctx.binding().registerHandler(WireID[M](), func(raw Message, from transport.Host) {
 		fn(raw.(M), from)
 	})
 }

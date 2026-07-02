@@ -190,17 +190,17 @@ func RegisterRequestHandler[Req Request, Rep Reply](
 	ctx ProtocolContext,
 	fn func(Req, Responder[Rep]),
 ) {
-	ctx.registerRequestHandler(WireID[Req](), func(raw Request, token replyToken) {
+	ctx.binding().registerRequestHandler(WireID[Req](), func(raw Request, token replyToken) {
 		typed, ok := raw.(Req)
 		if !ok {
 			// Type mismatch should be unreachable since wire ID
 			// derives from the type, but defend against bug-introduced
 			// misroutes by failing the responder rather than panicking.
-			ctx.deliverReplyToToken(token, nil,
+			ctx.binding().deliverReplyToToken(token, nil,
 				fmt.Errorf("protorun: request type mismatch: expected %T, got %T", *new(Req), raw))
 			return
 		}
-		r := &responder[Rep]{runtime: ctx.runtimePtr(), token: token}
+		r := &responder[Rep]{runtime: ctx.binding().runtime, token: token}
 		// Recover here (not just at the event-loop dispatcher) so we
 		// can auto-fail the responder before the panic escapes; that
 		// way the requester sees ErrHandlerPanicked immediately
@@ -218,7 +218,7 @@ func RegisterRequestHandler[Req Request, Rep Reply](
 				// OnPanic has already been called", which is the
 				// natural assumption a supervisor / metrics hook
 				// will make.
-				ctx.reportPanic("request handler", rec, debug.Stack())
+				ctx.binding().reportPanic("request handler", rec, debug.Stack())
 				r.Fail(fmt.Errorf("%w: %v", ErrHandlerPanicked, rec))
 			}
 		}()
@@ -247,7 +247,7 @@ func SendRequestWithTimeout[Req Request, Rep Reply](
 	timeout time.Duration,
 	onReply func(Rep, error),
 ) {
-	rt := ctx.runtimePtr()
+	rt := ctx.binding().runtime
 	if timeout <= 0 {
 		timeout = rt.defaultRequestTimeout
 		if timeout <= 0 {
@@ -268,7 +268,7 @@ func SendRequestWithTimeout[Req Request, Rep Reply](
 		}
 		onReply(typed, nil)
 	}
-	ctx.sendRequest(WireID[Req](), req, timeout, wrapped)
+	ctx.binding().sendRequest(WireID[Req](), req, timeout, wrapped)
 }
 
 // SubscribeNotification installs fn as a subscriber for notifications
@@ -277,7 +277,7 @@ func SendRequestWithTimeout[Req Request, Rep Reply](
 // subscriber's protocol event loop. A second Subscribe call from the
 // same protocol for the same N replaces the prior handler.
 func SubscribeNotification[N Notification](ctx ProtocolContext, fn func(N)) {
-	ctx.subscribeNotification(WireID[N](), func(raw Notification) {
+	ctx.binding().subscribeNotification(WireID[N](), func(raw Notification) {
 		typed, ok := raw.(N)
 		if !ok {
 			return
@@ -290,12 +290,12 @@ func SubscribeNotification[N Notification](ctx ProtocolContext, fn func(N)) {
 // for notifications of type N. Idempotent; a no-op if the protocol
 // wasn't subscribed.
 func UnsubscribeNotification[N Notification](ctx ProtocolContext) {
-	ctx.unsubscribeNotification(WireID[N]())
+	ctx.binding().unsubscribeNotification(WireID[N]())
 }
 
 // PublishNotification fans the notification out to every protocol that
 // has subscribed to N's wire id. Fire-and-forget; no acknowledgement,
 // no error path. Subscribers receive on their own event loops.
 func PublishNotification[N Notification](ctx ProtocolContext, n N) {
-	ctx.publishNotification(WireID[N](), n)
+	ctx.binding().publishNotification(WireID[N](), n)
 }

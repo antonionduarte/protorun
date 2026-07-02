@@ -15,10 +15,13 @@ func TestCodecRegistry_SetGet(t *testing.T) {
 		t.Fatalf("Get on empty registry should miss")
 	}
 
-	r.Set(42, proto)
+	r.Set(42, proto, codecAdapter[*localMessage]{c: localCodec{}})
 	got, ok := r.Get(42)
-	if !ok || got != proto {
-		t.Fatalf("Get after Set: ok=%v got=%v want=%v", ok, got, proto)
+	if !ok || got.proto != proto {
+		t.Fatalf("Get after Set: ok=%v got=%v want=%v", ok, got.proto, proto)
+	}
+	if got.codec == nil {
+		t.Fatalf("expected the codec to be registered alongside the protocol")
 	}
 }
 
@@ -27,10 +30,10 @@ func TestCodecRegistry_SetGet(t *testing.T) {
 func TestCodecRegistry_OverwriteWins(t *testing.T) {
 	r := newCodecRegistry()
 	first, second := &protoProtocol{}, &protoProtocol{}
-	r.Set(1, first)
-	r.Set(1, second)
-	if got, _ := r.Get(1); got != second {
-		t.Fatalf("expected second writer to win, got %v", got)
+	r.Set(1, first, codecAdapter[*localMessage]{c: localCodec{}})
+	r.Set(1, second, codecAdapter[*localMessage]{c: localCodec{}})
+	if got, _ := r.Get(1); got.proto != second {
+		t.Fatalf("expected second writer to win, got %v", got.proto)
 	}
 }
 

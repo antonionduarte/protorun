@@ -164,4 +164,3 @@ func (p *protoProtocol) strictReplyWithoutHandler() {
 	p.runtime.Logger().Warn("protorun strict: reply landed with no pending request",
 		"protocol", fmt.Sprintf("%T", p.protocol))
 }
-

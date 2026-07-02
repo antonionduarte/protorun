@@ -69,8 +69,8 @@ func buildRetryRuntime(t *testing.T, self, target transport.Host, policy RetryPo
 // least one attempt during the window when the peer is up, and the
 // watcher should observe a SessionConnected.
 func TestRuntime_ConnectRetry_LatePeer(t *testing.T) {
-	clientHost := transport.NewHost(7610, "127.0.0.1")
-	peerHost := transport.NewHost(7611, "127.0.0.1")
+	clientHost := transport.NewHost(6310, "127.0.0.1")
+	peerHost := transport.NewHost(6311, "127.0.0.1")
 
 	policy := RetryPolicy{Initial: 50 * time.Millisecond, Max: 200 * time.Millisecond, Multiplier: 2}
 	rtA, watcher := buildRetryRuntime(t, clientHost, peerHost, policy)
@@ -111,8 +111,8 @@ func TestRuntime_ConnectRetry_LatePeer(t *testing.T) {
 // TestRuntime_ConnectRetry_MaxAttempts retries against a peer that never
 // comes online and expects exactly N SessionGivenUp events after MaxAttempts.
 func TestRuntime_ConnectRetry_MaxAttempts(t *testing.T) {
-	clientHost := transport.NewHost(7620, "127.0.0.1")
-	deadHost := transport.NewHost(7621, "127.0.0.1")
+	clientHost := transport.NewHost(6320, "127.0.0.1")
+	deadHost := transport.NewHost(6321, "127.0.0.1")
 
 	policy := RetryPolicy{
 		Initial:     20 * time.Millisecond,
@@ -152,8 +152,8 @@ func TestRuntime_ConnectRetry_MaxAttempts(t *testing.T) {
 // despite a finite MaxAttempts) and that the runtime's retry bookkeeping
 // is cleared.
 func TestRuntime_ConnectRetry_DisconnectCancels(t *testing.T) {
-	clientHost := transport.NewHost(7630, "127.0.0.1")
-	deadHost := transport.NewHost(7631, "127.0.0.1")
+	clientHost := transport.NewHost(6330, "127.0.0.1")
+	deadHost := transport.NewHost(6331, "127.0.0.1")
 
 	policy := RetryPolicy{
 		Initial:     30 * time.Millisecond,

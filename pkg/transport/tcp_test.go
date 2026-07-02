@@ -45,8 +45,8 @@ func TestTCPLayerConnection(t *testing.T) {
 }
 
 func TestTCPLayerSendMessage(t *testing.T) {
-	first := NewHost(7501, "127.0.0.1")
-	second := NewHost(7502, "127.0.0.1")
+	first := NewHost(6601, "127.0.0.1")
+	second := NewHost(6602, "127.0.0.1")
 
 	firstCtx := context.Background()
 	secondCtx := context.Background()
@@ -98,8 +98,8 @@ func TestTCPLayerSendMessage(t *testing.T) {
 // TestTCPLayerFramingMultipleMessages ensures that multiple messages sent back-to-back
 // are correctly framed and delivered as distinct Messages on the receiver.
 func TestTCPLayerFramingMultipleMessages(t *testing.T) {
-	first := NewHost(7601, "127.0.0.1")
-	second := NewHost(7602, "127.0.0.1")
+	first := NewHost(6603, "127.0.0.1")
+	second := NewHost(6604, "127.0.0.1")
 
 	firstCtx, firstCancel := context.WithCancel(context.Background())
 	secondCtx, secondCancel := context.WithCancel(context.Background())
@@ -190,8 +190,8 @@ func TestDisconnect(t *testing.T) {
 // TestTCPLayerCancelClosesConnections verifies that Cancel() on TCPLayer
 // closes all active connections and leaves no connections tracked.
 func TestTCPLayerCancelClosesConnections(t *testing.T) {
-	first := NewHost(7801, "127.0.0.1")
-	second := NewHost(7802, "127.0.0.1")
+	first := NewHost(6605, "127.0.0.1")
+	second := NewHost(6606, "127.0.0.1")
 
 	ctx1 := t.Context()
 	ctx2 := t.Context()
@@ -231,7 +231,7 @@ func TestTCPLayerCancelClosesConnections(t *testing.T) {
 // closed the request channels and any in-flight Send would either panic on
 // send-to-closed-channel or deadlock if the goroutine already exited.
 func TestTCPLayer_SendAfterCancel(t *testing.T) {
-	self := NewHost(7903, "127.0.0.1")
+	self := NewHost(6607, "127.0.0.1")
 	node := NewTCPLayer(self, context.Background(), 0)
 	node.Cancel()
 

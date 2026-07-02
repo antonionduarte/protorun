@@ -166,6 +166,24 @@ func (r *Runtime) onSessionDownForRetry(host transport.Host) (giveUp bool, attem
 	return false, 0
 }
 
+// giveUpRetryNow terminates any retry schedule for host immediately,
+// returning the number of attempts made so far. Used for terminal
+// failures (e.g. a handshake Reject) where further dialing cannot
+// succeed regardless of the remaining budget.
+func (r *Runtime) giveUpRetryNow(host transport.Host) (attempts int) {
+	r.retryMu.Lock()
+	defer r.retryMu.Unlock()
+	st, ok := r.connectionRetries[host]
+	if !ok {
+		return 0
+	}
+	if st.timer != nil {
+		st.timer.Stop()
+	}
+	delete(r.connectionRetries, host)
+	return st.attempt
+}
+
 // stopRetryFor cancels any scheduled retry for host. Called when the user
 // explicitly disconnects.
 func (r *Runtime) stopRetryFor(host transport.Host) {

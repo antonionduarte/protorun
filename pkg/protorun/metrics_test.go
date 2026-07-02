@@ -1,7 +1,6 @@
 package protorun
 
 import (
-	"context"
 	"sync"
 	"testing"
 	"time"
@@ -74,10 +73,7 @@ func (m *recordingMetrics) histogramSamples(name string) int {
 func TestMetrics_NoopDefault(t *testing.T) {
 	self := transport.NewHost(0, "127.0.0.1")
 	rt := New(self)
-	mock := NewMockNetworkLayer()
-	rt.registerNetworkLayer(mock)
-	sess := transport.NewSessionLayer(mock, self, context.Background(), 0, 0)
-	rt.registerSessionLayer(sess)
+	_ = registerMockStack(rt, self)
 
 	if err := rt.start(); err != nil {
 		t.Fatalf("start: %v", err)
@@ -93,10 +89,7 @@ func TestMetrics_RecordsIPC(t *testing.T) {
 
 	self := transport.NewHost(0, "127.0.0.1")
 	rt := New(self, WithMetrics(rec))
-	mock := NewMockNetworkLayer()
-	rt.registerNetworkLayer(mock)
-	sess := transport.NewSessionLayer(mock, self, context.Background(), 0, 0)
-	rt.registerSessionLayer(sess)
+	_ = registerMockStack(rt, self)
 
 	server := newProtoProtocol(&MockProtocol{}, 16)
 	rt.registerProtocol(server)
@@ -140,10 +133,7 @@ func TestMetrics_RecordsLatencyHistogram(t *testing.T) {
 
 	self := transport.NewHost(0, "127.0.0.1")
 	rt := New(self, WithMetrics(rec), WithChannelBuffer(256))
-	mock := NewMockNetworkLayer()
-	rt.registerNetworkLayer(mock)
-	sess := transport.NewSessionLayer(mock, self, context.Background(), 0, 0)
-	rt.registerSessionLayer(sess)
+	_ = registerMockStack(rt, self)
 
 	server := newProtoProtocol(&MockProtocol{}, 256)
 	rt.registerProtocol(server)
@@ -189,10 +179,7 @@ func TestMetrics_RecordsPanic(t *testing.T) {
 
 	self := transport.NewHost(0, "127.0.0.1")
 	rt := New(self, WithMetrics(rec))
-	mock := NewMockNetworkLayer()
-	rt.registerNetworkLayer(mock)
-	sess := transport.NewSessionLayer(mock, self, context.Background(), 0, 0)
-	rt.registerSessionLayer(sess)
+	_ = registerMockStack(rt, self)
 
 	server := newProtoProtocol(&MockProtocol{}, 16)
 	rt.registerProtocol(server)

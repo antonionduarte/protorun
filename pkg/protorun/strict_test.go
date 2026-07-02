@@ -26,9 +26,7 @@ func TestProtocolContext_NarrowInterfaces(t *testing.T) {
 	// capability accepts a full ProtocolContext.
 	use := func(c Connector) { _ = c }
 	rt := New(transport.NewHost(0, "127.0.0.1"))
-	mock := NewMockNetworkLayer()
-	rt.registerNetworkLayer(mock)
-	rt.registerSessionLayer(transport.NewSessionLayer(mock, rt.self, context.Background(), 0, 0))
+	_ = registerMockStack(rt, rt.self)
 	defer rt.Cancel()
 
 	proto := newProtoProtocol(&MockProtocol{}, 0)
@@ -158,9 +156,7 @@ func TestStrict_Disabled_NoPanic(t *testing.T) {
 
 	self := transport.NewHost(0, "127.0.0.1")
 	rt := New(self) // no WithStrict
-	mock := NewMockNetworkLayer()
-	rt.registerNetworkLayer(mock)
-	rt.registerSessionLayer(transport.NewSessionLayer(mock, self, context.Background(), 0, 0))
+	_ = registerMockStack(rt, self)
 	rt.Register(&strictPanicProtocol{
 		startBody: func(ctx ProtocolContext) {
 			RegisterCodec(ctx, BinaryCodec[*benchMsg]{})
@@ -184,9 +180,7 @@ func TestStrict_SlowHandlerWatchdog_Logs(t *testing.T) {
 		WithStrictHandlerTimeout(50*time.Millisecond),
 		WithMetrics(rec),
 	)
-	mock := NewMockNetworkLayer()
-	rt.registerNetworkLayer(mock)
-	rt.registerSessionLayer(transport.NewSessionLayer(mock, self, context.Background(), 0, 0))
+	_ = registerMockStack(rt, self)
 
 	// Register a request handler that sleeps past the threshold.
 	server := newProtoProtocol(&MockProtocol{}, 16)

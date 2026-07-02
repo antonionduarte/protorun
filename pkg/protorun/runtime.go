@@ -61,8 +61,12 @@ type Runtime struct {
 
 	defaultRequestTimeout time.Duration
 
+	// networkLayer is held only for lifecycle teardown (Cancel); all
+	// runtime traffic flows through the Sessions seam. It may be nil
+	// when the Sessions adapter owns its own transport (or has none,
+	// like prototest's in-memory mesh).
 	networkLayer transport.Layer
-	sessionLayer *transport.SessionLayer
+	sessionLayer Sessions
 
 	logger  *slog.Logger
 	metrics Metrics
@@ -166,10 +170,13 @@ func (r *Runtime) Logger() *slog.Logger {
 // inside this package use start() directly when they need "register
 // then verify" without blocking; user code should call Run instead.
 func (r *Runtime) start() error {
-	if r.networkLayer == nil {
-		return ErrNoNetworkLayer
-	}
 	if r.sessionLayer == nil {
+		// The runtime speaks only to the Sessions seam; a bare
+		// transport.Layer isn't enough. Distinguish the errors so the
+		// operator knows which half of the stack is missing.
+		if r.networkLayer == nil {
+			return ErrNoNetworkLayer
+		}
 		return ErrNoSessionLayer
 	}
 	if err := r.ctx.Err(); err != nil {
@@ -194,9 +201,10 @@ func (r *Runtime) registerNetworkLayer(networkLayer transport.Layer) {
 	r.networkLayer = networkLayer
 }
 
-// registerSessionLayer attaches a SessionLayer. As with the transport
-// layer, normal callers wire this via WithTCPTransport.
-func (r *Runtime) registerSessionLayer(sessionLayer *transport.SessionLayer) {
+// registerSessionLayer attaches a Sessions adapter. As with the
+// transport layer, normal callers wire this via WithTCPTransport or
+// WithTransport.
+func (r *Runtime) registerSessionLayer(sessionLayer Sessions) {
 	r.sessionLayer = sessionLayer
 }
 
@@ -458,8 +466,46 @@ func (r *Runtime) dispatchSessionEvent(ctx context.Context, ev transport.Session
 		// SessionGivenUp (terminal failure). Without a retry policy in
 		// effect this branch is unreachable because no retry state existed.
 		return true
+	case *transport.SessionVersionMismatch:
+		r.metrics.Counter("protorun.session.version_mismatch", 1,
+			Attr{Key: "host", Value: e.Host().String()},
+			Attr{Key: "peer_version", Value: e.PeerVersion()},
+			Attr{Key: "inbound", Value: e.Inbound()})
+		if e.Inbound() {
+			// A peer dialed us with a version we don't speak; the
+			// session layer already answered with a Reject and closed
+			// the connection. Nothing to retry and nothing protocols
+			// can act on — log loudly for the operator and move on.
+			r.Logger().Error("rejected inbound handshake: peer speaks a different wire-format version",
+				"transport_host", e.Host().String(),
+				"peer_version", e.PeerVersion(),
+				"our_version", transport.ProtocolVersion)
+			return true
+		}
+		// Our own dial was Rejected: terminal. Burn no more retry
+		// budget on a peer that cannot accept us, and tell protocols
+		// to stop via the given-up surface they already implement.
+		r.Logger().Error("dial rejected: peer speaks a different wire-format version",
+			"host", e.Host().String(),
+			"peer_version", e.PeerVersion(),
+			"our_version", transport.ProtocolVersion)
+		attempts := r.giveUpRetryNow(e.Host())
+		r.metrics.Counter("protorun.session.given_up", 1,
+			Attr{Key: "host", Value: e.Host().String()},
+			Attr{Key: "attempts", Value: attempts})
+		return r.fanoutSessionEvent(ctx, sessionEvent{kind: sessionGivenUpEvent, host: e.Host(), attempts: attempts})
+	default:
+		// Every SessionEvent kind must have an explicit route here (and
+		// in TestDispatchSessionEvent_CoversAllEventKinds). Hitting this
+		// default means the transport grew an event kind the runtime
+		// doesn't know about — a bug, not a condition to swallow.
+		r.Logger().Error("unhandled session event kind",
+			"type", fmt.Sprintf("%T", ev),
+			"host", ev.Host().String())
+		r.metrics.Counter("protorun.session.unhandled_event", 1,
+			Attr{Key: "type", Value: fmt.Sprintf("%T", ev)})
+		return true
 	}
-	return true
 }
 
 // fanoutSessionEvent delivers ev into every protocol's sessionEvents
@@ -495,7 +541,7 @@ func (r *Runtime) processMessage(buffer bytes.Buffer, from transport.Host) {
 	}
 	wireIDAttr := Attr{Key: "wireID", Value: fmt.Sprintf("%#x", wireID)}
 
-	protocol, exists := r.codecs.Get(wireID)
+	entry, exists := r.codecs.Get(wireID)
 	if !exists {
 		logger.Warn("received message for unknown wireID",
 			"from", from.String(),
@@ -504,18 +550,9 @@ func (r *Runtime) processMessage(buffer bytes.Buffer, from transport.Host) {
 		r.metrics.Counter("protorun.message.dropped_unknown_id", 1, wireIDAttr)
 		return
 	}
+	protocol := entry.proto
 
-	c, ok := protocol.codecs[wireID]
-	if !ok {
-		logger.Warn("codec lookup raced",
-			"from", from.String(),
-			"wireID", fmt.Sprintf("%#x", wireID),
-		)
-		r.metrics.Counter("protorun.message.dropped_codec_race", 1, wireIDAttr)
-		return
-	}
-
-	message, err := c.unmarshal(buffer.Bytes())
+	message, err := entry.codec.unmarshal(buffer.Bytes())
 	if err != nil {
 		logger.Error("failed to decode message",
 			"from", from.String(),
@@ -560,21 +597,30 @@ func WithTCPTransport(ctx context.Context) Option {
 // WithTransport injects a pre-constructed transport stack. Use this
 // when you need to plug in a non-TCP transport (UDP, in-memory, mock
 // for tests), tune buffer sizes / timeouts on the existing layers, or
-// otherwise own the construction yourself. Either argument may be
-// nil; the runtime accepts a network layer without a session layer
-// if you wire sessions some other way, and vice versa.
+// otherwise own the construction yourself. layer may be nil when the
+// Sessions adapter owns its own transport (or has none, like
+// prototest's in-memory mesh); it is held only so runtime teardown
+// can Cancel it.
 //
 // For the default TCP setup, prefer WithTCPTransport(ctx).
-func WithTransport(layer transport.Layer, session *transport.SessionLayer) Option {
+func WithTransport(layer transport.Layer, sessions Sessions) Option {
 	return func(r *Runtime) {
 		if layer != nil {
 			r.networkLayer = layer
 		}
-		if session != nil {
-			r.sessionLayer = session
+		if sessions != nil {
+			r.sessionLayer = sessions
 		}
 	}
 }
+
+// Start launches the runtime's goroutines (protocol event loops,
+// session event pump, main dispatcher) and returns immediately. The
+// caller owns the lifecycle: pair it with Cancel or Shutdown. Most
+// main functions should prefer Run, which adds signal handling and
+// blocks; Start is for embedding the runtime in something that
+// already owns its lifecycle (a server, a test fixture).
+func (r *Runtime) Start() error { return r.start() }
 
 // Run starts the runtime, installs SIGINT/SIGTERM handlers that call
 // Cancel on receipt, and blocks until the runtime context is done.

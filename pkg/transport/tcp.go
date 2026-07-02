@@ -40,16 +40,12 @@ type (
 // Frames with a declared length larger than this are treated as protocol errors.
 const maxFrameSize uint32 = 16 * 1024 * 1024 // 16MiB
 
-// encodeFrame wraps a payload with a 4-byte big-endian length prefix.
-// On the wire, each TCP frame sent by this layer has the format:
+// encodeFrame wraps a payload with a 4-byte big-endian length prefix:
 //
-//	[Length(uint32 BE) || LayerID(1 byte) || Body...]
+//	[Length(uint32 BE) || payload...]
 //
-// where Body is:
-//   - for application traffic: [ProtocolID(uint16 LE) || MessageID(uint16 LE) || Payload...]
-//   - for session traffic:     [HandshakeType(1 byte) || HandshakeData...]
-//
-// The LayerID and Body are produced/consumed by the SessionLayer.
+// The payload's internal structure belongs to the layers above; see
+// docs/wire-format.md for the full envelope.
 func encodeFrame(payload []byte) ([]byte, error) {
 	// Empty payloads are allowed and emitted as a 0-length frame.
 	if len(payload) > int(^uint32(0)) {
@@ -302,8 +298,8 @@ func (t *TCPLayer) connectionHandler(conn net.Conn, host Host) {
 				return
 			}
 			for _, frame := range frames {
-				// Each frame is the payload upper layers already understand:
-				// [LayerID || ProtocolID || MessageID || Contents]
+				// Each frame is the payload upper layers already
+				// understand (see docs/wire-format.md).
 				data := make([]byte, len(frame))
 				copy(data, frame)
 				t.outChannel <- Message{

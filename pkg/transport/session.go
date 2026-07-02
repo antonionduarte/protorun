@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"time"
 )
 
 // SessionLayer sits between the runtime and a concrete Layer.
@@ -24,6 +25,12 @@ type (
 		sendChan         chan SessionMessage // Requests to send a SessionMessage
 		outChannelEvents chan SessionEvent   // Outgoing events (connected, disconnected, etc.)
 		outMessages      chan SessionMessage // Outgoing messages at the session/application level
+
+		// handshakeTimeoutChan delivers expired client-handshake timers
+		// back onto the handler goroutine, so timeout transitions run on
+		// the same goroutine as every other FSM transition.
+		handshakeTimeoutChan chan Host
+		handshakeTimeout     time.Duration
 
 		// sessions holds per-peer session state machines, keyed by transport host.
 		sessions map[Host]*sessionConn
@@ -56,6 +63,13 @@ type (
 
 		lastErr error
 
+		// handshakeTimer bounds the client-side wait for the server's
+		// Ack (or Reject). Armed when the Hello is sent, stopped when
+		// the handshake resolves. Only touched from the handler
+		// goroutine; the timer's own callback just forwards onto
+		// handshakeTimeoutChan.
+		handshakeTimer *time.Timer
+
 		layer *SessionLayer
 	}
 
@@ -66,6 +80,11 @@ type (
 	}
 
 	// SessionEvent signals connection success/failure or disconnection at the session level.
+	//
+	// When adding a new concrete event type, give it a route in
+	// protorun's Runtime.dispatchSessionEvent and add it to that
+	// package's event-coverage test — the runtime treats unrouted
+	// event kinds as a bug and reports them loudly.
 	SessionEvent interface {
 		Host() Host
 	}
@@ -76,16 +95,20 @@ type (
 	SessionFailed struct {
 		host Host
 	}
+	// SessionConnected announces an Established session: both sides
+	// accepted the handshake. The dialing side emits it only after the
+	// server's Ack arrives.
 	SessionConnected struct {
 		host Host
 	}
-	// SessionVersionMismatch is emitted when an inbound Hello carries
-	// a wire-format version this build does not support. The peer
-	// connection is closed; subsequent retries will keep failing the
-	// same way until either side is upgraded.
+	// SessionVersionMismatch is emitted when a handshake fails because
+	// the peer speaks a different wire-format version. The connection
+	// is closed either way; inbound says which side detected it (see
+	// Inbound).
 	SessionVersionMismatch struct {
-		host       Host
+		host        Host
 		peerVersion uint8
+		inbound     bool
 	}
 
 	// LayerIdentifier differentiates between application-level payloads and
@@ -115,6 +138,7 @@ const (
 const (
 	HandshakeHello HandshakeType = iota + 1
 	HandshakeAck
+	HandshakeReject
 )
 
 // Accessor methods to implement the SessionEvent interface:
@@ -123,12 +147,48 @@ func (s *SessionDisconnected) Host() Host    { return s.host }
 func (s *SessionFailed) Host() Host          { return s.host }
 func (s *SessionVersionMismatch) Host() Host { return s.host }
 
+// Event constructors, for adapters at the runtime's Sessions seam
+// (in-memory meshes, test fakes) that emit session events themselves.
+func NewSessionConnected(host Host) *SessionConnected       { return &SessionConnected{host: host} }
+func NewSessionDisconnected(host Host) *SessionDisconnected { return &SessionDisconnected{host: host} }
+func NewSessionFailed(host Host) *SessionFailed             { return &SessionFailed{host: host} }
+func NewSessionVersionMismatch(host Host, peerVersion uint8, inbound bool) *SessionVersionMismatch {
+	return &SessionVersionMismatch{host: host, peerVersion: peerVersion, inbound: inbound}
+}
+
 // PeerVersion is the wire-format version the offending peer
 // announced. Useful for logs / metrics to spot which side needs the
 // upgrade.
 func (s *SessionVersionMismatch) PeerVersion() uint8 { return s.peerVersion }
 
-func NewSessionLayer(transport Layer, self Host, ctx context.Context, eventsBuf, msgsBuf int) *SessionLayer {
+// Inbound reports which side of the handshake detected the mismatch.
+// True: a peer dialed us with a version we don't speak; Host() is the
+// ephemeral transport host of that inbound connection. False: our own
+// dial was Rejected by the peer; Host() is the logical Host we dialed,
+// and further retries against it cannot succeed.
+func (s *SessionVersionMismatch) Inbound() bool { return s.inbound }
+
+// defaultHandshakeTimeout bounds how long a dialing session waits for
+// the server's Ack (or Reject) after sending its Hello.
+const defaultHandshakeTimeout = 5 * time.Second
+
+// SessionOption customizes a SessionLayer at construction time.
+type SessionOption func(*SessionLayer)
+
+// WithHandshakeTimeout overrides how long a dialing session waits for
+// the server's Ack (or Reject) before the handshake is failed.
+func WithHandshakeTimeout(d time.Duration) SessionOption {
+	return func(s *SessionLayer) {
+		if d > 0 {
+			s.handshakeTimeout = d
+		}
+	}
+}
+
+func NewSessionLayer(
+	transport Layer, self Host, ctx context.Context,
+	eventsBuf, msgsBuf int, opts ...SessionOption,
+) *SessionLayer {
 	ctx, cancel := context.WithCancel(ctx)
 	logger := slog.Default().With("component", "session")
 	if eventsBuf <= 0 {
@@ -138,19 +198,24 @@ func NewSessionLayer(transport Layer, self Host, ctx context.Context, eventsBuf,
 		msgsBuf = defaultSessionMessagesBuffer
 	}
 	session := &SessionLayer{
-		self:               self,
-		connectChan:        make(chan Host),
-		disconnectChan:     make(chan Host),
-		sendChan:           make(chan SessionMessage),
-		outChannelEvents:   make(chan SessionEvent, eventsBuf),
-		outMessages:        make(chan SessionMessage, msgsBuf),
-		sessions:           make(map[Host]*sessionConn),
-		transport:          transport,
-		transportToLogical: make(map[Host]Host),
-		logicalToTransport: make(map[Host]Host),
-		ctx:                ctx,
-		cancelFunc:         cancel,
-		logger:             logger,
+		self:                 self,
+		connectChan:          make(chan Host),
+		disconnectChan:       make(chan Host),
+		sendChan:             make(chan SessionMessage),
+		outChannelEvents:     make(chan SessionEvent, eventsBuf),
+		outMessages:          make(chan SessionMessage, msgsBuf),
+		handshakeTimeoutChan: make(chan Host),
+		handshakeTimeout:     defaultHandshakeTimeout,
+		sessions:             make(map[Host]*sessionConn),
+		transport:            transport,
+		transportToLogical:   make(map[Host]Host),
+		logicalToTransport:   make(map[Host]Host),
+		ctx:                  ctx,
+		cancelFunc:           cancel,
+		logger:               logger,
+	}
+	for _, opt := range opts {
+		opt(session)
 	}
 	go session.handler(ctx)
 	return session
@@ -185,9 +250,10 @@ func (s *sessionConn) handleClientConnectRequested() {
 func (s *sessionConn) handleConnected() {
 	switch s.state {
 	case SessionStateHandshakingClient:
-		// Client side: send Hello with our logical host and consider the
-		// session established from the client's perspective.
-		s.layer.logger.Debug("session FSM: transport connected (client), sending Hello and marking established",
+		// Client side: send Hello with our logical host, then wait for
+		// the server's Ack (or Reject) before treating the session as
+		// Established — see handleClientHandshake.
+		s.layer.logger.Debug("session FSM: transport connected (client), sending Hello",
 			"logical", s.logicalHost.String(),
 			"transport", s.transportHost.String())
 		helloPayload, err := encodeHello(s.layer.self)
@@ -206,19 +272,13 @@ func (s *sessionConn) handleConnected() {
 			Msg:   helloPayload,
 		}
 		msg := serializeMessage(sessionMsg)
-		s.layer.logger.Debug("session FSM: client sending Hello on transport",
-			"transport", s.transportHost.String())
 		s.layer.transport.Send(msg, s.transportHost)
-		s.layer.logger.Debug("session FSM: client Hello sent",
+		s.layer.logger.Debug("session FSM: client Hello sent, awaiting Ack",
 			"transport", s.transportHost.String())
 
-		// Mark as established on the client side and emit SessionConnected.
-		s.state = SessionStateEstablished
-		s.layer.setServerMapping(s.transportHost, s.logicalHost)
-		s.layer.logger.Info("session FSM: client emitting SessionConnected",
-			"peer", s.logicalHost.String(),
-			"transport", s.transportHost.String())
-		s.layer.emitEvent(&SessionConnected{host: s.logicalHost})
+		// Bound the wait: a peer that accepts the connection but never
+		// answers the Hello must not park the session in handshaking.
+		s.armHandshakeTimer()
 
 	case SessionStateHandshakingServer:
 		// Server side: just record that the transport is up; we wait for Hello.
@@ -233,47 +293,69 @@ func (s *sessionConn) handleConnected() {
 	}
 }
 
-// handleHandshakeMessage processes a session-layer handshake message (Hello or Ack).
+// handleHandshakeMessage processes a session-layer handshake message
+// (Hello, Ack, or Reject).
 func (s *sessionConn) handleHandshakeMessage(msg SessionMessage) {
 	// Work on a copy so we don't mutate shared buffers.
 	buf := bytes.NewBuffer(msg.Msg.Bytes())
-	ht, host, err := parseHandshakePayload(buf)
+	p, err := parseHandshakePayload(buf)
 	if err != nil {
 		s.lastErr = err
 		s.layer.logger.Error("session FSM: failed to parse handshake payload",
 			"transport", s.transportHost.String(),
 			"err", err)
-		// Version mismatch is reported as its own event so observers
-		// can distinguish "peer speaks the wrong dialect" from "peer
-		// crashed mid-handshake". The connection is then torn down by
-		// the transport on the next read error.
+		// Version mismatch gets its own treatment so the dialer can
+		// distinguish "peer speaks the wrong dialect" from "peer
+		// crashed mid-handshake": we tell it why with a Reject before
+		// closing the connection.
 		if errors.Is(err, ErrVersionMismatch) {
-			s.layer.outChannelEvents <- &SessionVersionMismatch{host: s.transportHost}
-			s.layer.transport.Disconnect(s.transportHost)
+			s.rejectHandshake(p.version)
 		}
 		return
 	}
 
 	switch s.state {
 	case SessionStateHandshakingServer:
-		s.handleServerHandshake(ht, host)
+		s.handleServerHandshake(p)
 	case SessionStateHandshakingClient:
-		s.handleClientHandshake(ht, host)
+		s.handleClientHandshake(p)
 	default:
 		s.layer.logger.Warn("session FSM: handshake message in unexpected state",
 			"state", s.state,
-			"type", ht,
+			"type", p.typ,
 			"transport", s.transportHost.String())
 	}
 }
 
-func (s *sessionConn) handleServerHandshake(ht HandshakeType, remote Host) {
-	switch ht {
+// rejectHandshake refuses an inbound Hello whose wire-format version
+// this build does not speak: it sends a Reject carrying our version so
+// the dialer can stop retrying, emits an inbound SessionVersionMismatch
+// for observability, and tears the connection down. The state moves to
+// Failed so the subsequent transport Disconnected event does not emit a
+// spurious SessionDisconnected.
+func (s *sessionConn) rejectHandshake(peerVersion uint8) {
+	rejectMsg := SessionMessage{
+		host:  s.transportHost,
+		layer: Session,
+		Msg:   encodeReject(),
+	}
+	s.layer.transport.Send(serializeMessage(rejectMsg), s.transportHost)
+	s.state = SessionStateFailed
+	s.layer.emitEvent(&SessionVersionMismatch{
+		host:        s.transportHost,
+		peerVersion: peerVersion,
+		inbound:     true,
+	})
+	s.layer.transport.Disconnect(s.transportHost)
+}
+
+func (s *sessionConn) handleServerHandshake(p handshakePayload) {
+	switch p.typ {
 	case HandshakeHello:
 		// Server received client's logical host; record mapping and send Ack.
-		s.logicalHost = remote
+		s.logicalHost = p.host
 		s.layer.logger.Debug("session FSM: server received Hello",
-			"client", remote.String(),
+			"client", p.host.String(),
 			"transport", s.transportHost.String())
 
 		ackPayload := encodeAck()
@@ -300,21 +382,45 @@ func (s *sessionConn) handleServerHandshake(ht HandshakeType, remote Host) {
 			"transport", s.transportHost.String())
 		s.layer.emitEvent(&SessionConnected{host: s.logicalHost})
 
-	case HandshakeAck:
-		// Server receiving Ack is unexpected.
-		s.layer.logger.Warn("session FSM: server received unexpected Ack",
+	case HandshakeAck, HandshakeReject:
+		// Server receiving Ack or Reject is unexpected.
+		s.layer.logger.Warn("session FSM: server received unexpected handshake message",
+			"type", p.typ,
 			"transport", s.transportHost.String())
 	}
 }
 
-func (s *sessionConn) handleClientHandshake(ht HandshakeType, _ Host) {
-	switch ht {
+func (s *sessionConn) handleClientHandshake(p handshakePayload) {
+	switch p.typ {
 	case HandshakeAck:
-		// Client receiving Ack is optional confirmation; we already treat the
-		// session as established on transport connect. Just log it.
-		s.layer.logger.Debug("session FSM: client received Ack",
-			"server", s.logicalHost.String(),
+		// The server accepted our Hello: the session is Established on
+		// both sides now, and only now do protocols learn about it.
+		s.stopHandshakeTimer()
+		s.state = SessionStateEstablished
+		s.layer.setServerMapping(s.transportHost, s.logicalHost)
+		s.layer.logger.Info("session FSM: client received Ack, emitting SessionConnected",
+			"peer", s.logicalHost.String(),
 			"transport", s.transportHost.String())
+		s.layer.emitEvent(&SessionConnected{host: s.logicalHost})
+
+	case HandshakeReject:
+		// The server speaks a different wire-format version. Terminal:
+		// redialing the same peer cannot succeed until one side is
+		// upgraded, so the runtime translates this into given-up.
+		s.stopHandshakeTimer()
+		s.state = SessionStateFailed
+		s.lastErr = fmt.Errorf("%w: peer=%s peer_version=%d",
+			ErrVersionMismatch, s.logicalHost.String(), p.version)
+		s.layer.logger.Warn("session FSM: dial rejected, peer speaks a different wire-format version",
+			"peer", s.logicalHost.String(),
+			"peer_version", p.version,
+			"our_version", ProtocolVersion)
+		s.layer.emitEvent(&SessionVersionMismatch{
+			host:        s.logicalHost,
+			peerVersion: p.version,
+			inbound:     false,
+		})
+		s.layer.transport.Disconnect(s.transportHost)
 
 	case HandshakeHello:
 		// Client receiving Hello is unexpected in the current simple protocol.
@@ -323,8 +429,31 @@ func (s *sessionConn) handleClientHandshake(ht HandshakeType, _ Host) {
 	}
 }
 
+// armHandshakeTimer starts the bounded wait for the server's handshake
+// answer. The callback only forwards onto handshakeTimeoutChan (ctx
+// guarded); the actual state transition runs on the handler goroutine
+// in dispatchHandshakeTimeout.
+func (s *sessionConn) armHandshakeTimer() {
+	layer := s.layer
+	transportHost := s.transportHost
+	s.handshakeTimer = time.AfterFunc(layer.handshakeTimeout, func() {
+		select {
+		case layer.handshakeTimeoutChan <- transportHost:
+		case <-layer.ctx.Done():
+		}
+	})
+}
+
+func (s *sessionConn) stopHandshakeTimer() {
+	if s.handshakeTimer != nil {
+		s.handshakeTimer.Stop()
+		s.handshakeTimer = nil
+	}
+}
+
 // handleDisconnected handles a disconnect at the transport level.
 func (s *sessionConn) handleDisconnected() {
+	s.stopHandshakeTimer()
 	s.layer.logger.Debug("session FSM: transport disconnected",
 		"state", s.state,
 		"logical", s.logicalHost.String(),
@@ -347,6 +476,7 @@ func (s *sessionConn) handleDisconnected() {
 
 // handleFailed handles a failure at the transport level.
 func (s *sessionConn) handleFailed() {
+	s.stopHandshakeTimer()
 	s.layer.logger.Warn("session FSM: transport failed",
 		"state", s.state,
 		"logical", s.logicalHost.String(),
@@ -362,11 +492,12 @@ func (s *sessionConn) handleFailed() {
 }
 
 // ProtocolVersion is the wire-format version this build advertises in
-// every Hello handshake. Receivers reject Hello messages with a
-// mismatched version, emitting a SessionVersionMismatch event and
-// closing the underlying connection. Bump this whenever the framing
-// or handshake structure changes in a way that prior builds can't
-// handle.
+// every Hello handshake. Receivers refuse Hello messages with a
+// mismatched version by answering with a Reject (so the dialer learns
+// the incompatibility and stops retrying), emitting a
+// SessionVersionMismatch event, and closing the underlying connection.
+// Bump this whenever the framing or handshake structure changes in a
+// way that prior builds can't handle.
 const ProtocolVersion uint8 = 1
 
 // ErrVersionMismatch is wrapped into the parse error returned by
@@ -399,46 +530,83 @@ func encodeAck() bytes.Buffer {
 	return *buf
 }
 
-// parseHandshakePayload interprets a session-layer handshake payload into
-// a HandshakeType and optional Host (for Hello messages). Layout:
+// encodeReject builds a session-layer handshake Reject payload carrying
+// our own wire-format version, so the rejected dialer can log which
+// side needs the upgrade: [HandshakeType(1 byte, HandshakeReject) ||
+// Version(1 byte)].
+func encodeReject() bytes.Buffer {
+	buf := bytes.NewBuffer(nil)
+	buf.WriteByte(byte(HandshakeReject))
+	buf.WriteByte(ProtocolVersion)
+	return *buf
+}
+
+// handshakePayload is the parsed form of a session-layer handshake
+// message.
+type handshakePayload struct {
+	typ     HandshakeType
+	host    Host  // sender's logical host (Hello only)
+	version uint8 // sender's wire-format version (Hello and Reject)
+}
+
+// parseHandshakePayload interprets a session-layer handshake payload.
+// Layout:
 //
 //	[HandshakeType(1 byte) || Data...]
 //
-// where Data is [Version(1 byte) || WriteHost(host)] for HandshakeHello
-// and empty for HandshakeAck. A version-byte mismatch is flagged with
-// ErrVersionMismatch so the session layer can emit a typed event
-// instead of dropping the connection silently.
-func parseHandshakePayload(buf *bytes.Buffer) (HandshakeType, Host, error) {
-	var zeroHost Host
+// where Data is [Version(1 byte) || WriteHost(host)] for HandshakeHello,
+// [Version(1 byte)] for HandshakeReject, and empty for HandshakeAck.
+// A Hello version-byte mismatch is flagged with ErrVersionMismatch —
+// with the offending version still populated in the returned payload —
+// so the session layer can Reject the dial instead of dropping the
+// connection silently.
+func parseHandshakePayload(buf *bytes.Buffer) (handshakePayload, error) {
+	var p handshakePayload
 	if buf.Len() == 0 {
-		return 0, zeroHost, fmt.Errorf("handshake payload empty")
+		return p, fmt.Errorf("handshake payload empty")
 	}
 
 	msgType, err := buf.ReadByte()
 	if err != nil {
-		return 0, zeroHost, fmt.Errorf("failed to read handshake type: %w", err)
+		return p, fmt.Errorf("failed to read handshake type: %w", err)
 	}
+	p.typ = HandshakeType(msgType)
 
-	switch HandshakeType(msgType) {
+	switch p.typ {
 	case HandshakeHello:
+		return parseHello(p, buf)
+	case HandshakeAck:
+		return p, nil
+	case HandshakeReject:
 		version, err := buf.ReadByte()
 		if err != nil {
-			return 0, zeroHost, fmt.Errorf("HandshakeHello: read version: %w", err)
+			return p, fmt.Errorf("HandshakeReject: read version: %w", err)
 		}
-		if version != ProtocolVersion {
-			return HandshakeHello, zeroHost,
-				fmt.Errorf("%w: got=%d expected=%d", ErrVersionMismatch, version, ProtocolVersion)
-		}
-		host, err := ReadHost(buf)
-		if err != nil {
-			return 0, zeroHost, fmt.Errorf("HandshakeHello: %w", err)
-		}
-		return HandshakeHello, host, nil
-	case HandshakeAck:
-		return HandshakeAck, zeroHost, nil
+		p.version = version
+		return p, nil
 	default:
-		return 0, zeroHost, fmt.Errorf("unknown handshake type: %d", msgType)
+		return handshakePayload{}, fmt.Errorf("unknown handshake type: %d", msgType)
 	}
+}
+
+// parseHello reads a Hello's version byte and sender Host into p,
+// flagging a version mismatch with ErrVersionMismatch (the offending
+// version stays populated so the caller can Reject with context).
+func parseHello(p handshakePayload, buf *bytes.Buffer) (handshakePayload, error) {
+	version, err := buf.ReadByte()
+	if err != nil {
+		return p, fmt.Errorf("HandshakeHello: read version: %w", err)
+	}
+	p.version = version
+	if version != ProtocolVersion {
+		return p, fmt.Errorf("%w: got=%d expected=%d", ErrVersionMismatch, version, ProtocolVersion)
+	}
+	host, err := ReadHost(buf)
+	if err != nil {
+		return p, fmt.Errorf("HandshakeHello: %w", err)
+	}
+	p.host = host
+	return p, nil
 }
 
 // Cancel stops the internal goroutine(s) by cancelling their context.
@@ -495,6 +663,13 @@ func (m SessionMessage) Host() Host {
 	return m.host
 }
 
+// NewSessionMessage builds an application-level SessionMessage from
+// host, for adapters at the runtime's Sessions seam (in-memory meshes,
+// test fakes) that deliver messages themselves.
+func NewSessionMessage(msg bytes.Buffer, host Host) SessionMessage {
+	return SessionMessage{host: host, layer: Application, Msg: msg}
+}
+
 func (s *SessionLayer) handler(ctx context.Context) {
 	for {
 		select {
@@ -515,8 +690,33 @@ func (s *SessionLayer) handler(ctx context.Context) {
 
 		case msg := <-s.sendChan:
 			s.send(msg.Msg, msg.host)
+
+		case host := <-s.handshakeTimeoutChan:
+			s.dispatchHandshakeTimeout(host)
 		}
 	}
+}
+
+// dispatchHandshakeTimeout fails a client handshake that never received
+// the server's Ack (or Reject) in time. Runs on the handler goroutine
+// like every other FSM transition; a timeout that lost the race against
+// a resolution (Ack, Reject, disconnect) is a no-op.
+func (s *SessionLayer) dispatchHandshakeTimeout(transportHost Host) {
+	s.mu.Lock()
+	sc, ok := s.sessions[transportHost]
+	s.mu.Unlock()
+	if !ok || sc.state != SessionStateHandshakingClient {
+		return
+	}
+	sc.stopHandshakeTimer()
+	sc.state = SessionStateFailed
+	sc.lastErr = fmt.Errorf("session handshake: timed out waiting for Ack from %s", sc.logicalHost.String())
+	s.logger.Warn("session FSM: handshake timed out",
+		"peer", sc.logicalHost.String(),
+		"transport", transportHost.String(),
+		"timeout", s.handshakeTimeout)
+	s.emitEvent(&SessionFailed{host: sc.logicalHost})
+	s.transport.Disconnect(transportHost)
 }
 
 func (s *SessionLayer) transportMessageHandler(msg Message) {
@@ -699,7 +899,7 @@ func deserializeMessage(msg Message) SessionMessage {
 	return SessionMessage{
 		host:  msg.Host,
 		layer: layer,
-		Msg:   buffer, // remaining bytes: for Application, [ProtocolID || MessageID || Contents]
+		Msg:   buffer, // remaining bytes belong to the layer above (see docs/wire-format.md)
 	}
 }
 

@@ -1,7 +1,6 @@
 package protorun
 
 import (
-	"context"
 	"errors"
 	"sync"
 	"sync/atomic"
@@ -43,10 +42,7 @@ func startIPCRuntime(t *testing.T, protocols ...Protocol) *Runtime {
 	self := transport.NewHost(0, "127.0.0.1")
 	rt := New(self)
 
-	mock := NewMockNetworkLayer()
-	rt.registerNetworkLayer(mock)
-	sess := transport.NewSessionLayer(mock, self, context.Background(), 0, 0)
-	rt.registerSessionLayer(sess)
+	_ = registerMockStack(rt, self)
 
 	for _, p := range protocols {
 		rt.Register(p)

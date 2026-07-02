@@ -41,16 +41,12 @@ func (r *Runtime) sendMessage(msg Message, sendTo transport.Host) error {
 	logger := r.Logger()
 
 	wireID := wireIDOf(msg)
-	proto, ok := r.codecs.Get(wireID)
+	entry, ok := r.codecs.Get(wireID)
 	if !ok {
 		return fmt.Errorf("%w: %T (wireID=%#x)", ErrNoCodec, msg, wireID)
 	}
-	c, ok := proto.codecs[wireID]
-	if !ok {
-		return fmt.Errorf("sendMessage: codec lookup raced (wireID=%#x)", wireID)
-	}
 
-	payload, err := c.marshal(msg)
+	payload, err := entry.codec.marshal(msg)
 	if err != nil {
 		logger.Error("failed to encode message",
 			"type", fmt.Sprintf("%T", msg),

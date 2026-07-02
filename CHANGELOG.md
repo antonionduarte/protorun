@@ -7,6 +7,64 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 The framework is pre-1.0; minor versions may break API. Wire format
 is versioned via the session-layer handshake (`transport.ProtocolVersion`).
 
+## Unreleased
+
+Architecture pass driven by a deep-module review: handshake
+truthfulness, an explicit seam for session management, and a
+first-class testing package for protocol authors.
+
+### Added
+
+- **Handshake Reject.** A server that receives a Hello with an
+  unsupported wire-format version now answers with an explicit
+  `Reject` (HandshakeType 3, carrying the refuser's version) before
+  closing. The dialing runtime translates it into an immediate
+  terminal `OnSessionGivenUp` — no retry budget is burned on a peer
+  that can never accept — plus a loud log and a
+  `protorun.session.version_mismatch` metric. Old builds treat the
+  unknown handshake type as a parse error and close, exactly the
+  pre-Reject behavior, so no version bump is needed.
+- **Handshake timeout.** A dialer whose peer accepts the connection
+  but never answers the Hello fails the handshake after a bounded
+  wait (default 5s, `transport.WithHandshakeTimeout`).
+- **`protorun.Sessions` seam.** The runtime now holds its session
+  stack behind an interface derived from exactly what it uses;
+  `*transport.SessionLayer` is the production adapter and
+  `WithTransport` accepts any adapter. `Runtime.Start()` is exported
+  for callers that own their lifecycle.
+- **`pkg/prototest`.** In-memory mesh (no wire, no handshake,
+  deterministic in-process delivery) implementing `Sessions`, plus a
+  `NewRuntime` fixture: protocol authors can test full runtimes
+  without TCP or port management.
+- **Wire-format spec.** `docs/wire-format.md` is the authoritative
+  envelope description; per-layer code comments now describe only
+  the bytes that layer owns.
+
+### Changed
+
+- **`SessionConnected` is truthful on the dialing side.** The client
+  FSM waits for the server's Ack before marking the session
+  Established and emitting `SessionConnected` (previously it emitted
+  optimistically on Hello send, which reset the retry counter on
+  every doomed attempt — a handshake-rejecting peer caused an
+  infinite retry loop with phantom connect/disconnect flaps).
+- **Codec registry owns the codec.** wireID lookup is a single
+  guarded read returning `{protocol, codec}`; registration is one
+  atomic step and the "codec lookup raced" branches are gone.
+- **`ProtocolContext` shrank from 20 methods to 11.** The ten
+  unexported plumbing hooks collapsed into one sealing `binding()`
+  method; the generic helpers reach the framework through the
+  concrete binding. Protocol-author code is unaffected.
+
+### Fixed
+
+- `SessionVersionMismatch` events are now routed by the runtime
+  (previously dropped silently) and emitted through the ctx-guarded
+  `emitEvent` path (previously a raw channel send that could block
+  the session goroutine at shutdown). The runtime's event mapper now
+  has a loud default plus a coverage test so new event kinds can't
+  be silently unrouted.
+
 ## v0.1.0, 2026-05-02
 
 First tagged release. Established the protocol-runtime core, IPC

@@ -1,7 +1,6 @@
 package protorun
 
 import (
-	"context"
 	"testing"
 	"time"
 
@@ -14,10 +13,7 @@ func TestRuntime_RegisterAndRun(t *testing.T) {
 	self := transport.NewHost(0, "127.0.0.1")
 	rt := New(self)
 
-	mock := NewMockNetworkLayer()
-	rt.registerNetworkLayer(mock)
-	sess := transport.NewSessionLayer(mock, self, context.Background(), 0, 0)
-	rt.registerSessionLayer(sess)
+	_ = registerMockStack(rt, self)
 
 	impl := &MockProtocol{}
 	rt.Register(impl)

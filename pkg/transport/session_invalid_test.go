@@ -9,7 +9,7 @@ import (
 // TestSessionLayer_UnknownLayerIdentifier ensures that a SessionMessage with
 // an unknown LayerIdentifier is dropped without panicking.
 func TestSessionLayer_UnknownLayerIdentifier(t *testing.T) {
-	self := NewHost(8001, "127.0.0.1")
+	self := NewHost(6608, "127.0.0.1")
 
 	// Use a mock transport: we can re-use TCPLayer with no external peers by
 	// not connecting anywhere and just feeding messages directly.

@@ -1,10 +1,23 @@
 package protorun
 
 import (
+	"context"
 	"sync/atomic"
 
 	"github.com/antonionduarte/go-simple-protocol-runtime/pkg/transport"
 )
+
+// registerMockStack wires rt with the standard in-package fixture: a
+// MockNetworkLayer wrapped in a real SessionLayer bound to self. This
+// is the one place that knows how a test runtime's transport stack is
+// assembled. (Out-of-package protocol tests should use pkg/prototest
+// instead; this package can't import it without a cycle.)
+func registerMockStack(rt *Runtime, self transport.Host) *MockNetworkLayer {
+	mock := NewMockNetworkLayer()
+	rt.registerNetworkLayer(mock)
+	rt.registerSessionLayer(transport.NewSessionLayer(mock, self, context.Background(), 0, 0))
+	return mock
+}
 
 // MockProtocol is a stub Protocol used in tests. It does no work itself;
 // tests mostly care that Start/Init were called and that the protocol
