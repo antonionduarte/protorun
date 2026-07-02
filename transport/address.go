@@ -20,10 +20,14 @@ package transport
 // "IP:port" formatter) and Equal(other Address) which type-asserts
 // the other to Host and compares structurally.
 //
-// NOTE: As of v0.1.0 the public Layer interface still parameterises
-// its methods on Host directly. Migrating Layer to take Address is
-// tracked in TODO.md and will land in a follow-up release once
-// there's a real non-Host implementation to validate against.
+// Layer's methods (Connect/Disconnect/Send, Message.Peer, Event.Peer())
+// are parameterised on Address, not Host (this migration landed in
+// Phase 3 / v0.5.0 once the QUIC backend gave it a real second
+// implementation to validate against). SessionLayer is the sole
+// translation point between transport-level Addresses and the stable
+// logical Hosts protocols see; NewSessionLayer itself still takes a
+// Host for `self`, since a session's own logical identity is Host-typed
+// regardless of which Address type the Layer underneath uses.
 type Address interface {
 	String() string
 	Equal(other Address) bool

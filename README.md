@@ -1,28 +1,20 @@
 # protorun
 
-A small framework for building distributed protocols in Go, inspired by
-[Babel](https://github.com/pfouto/babel-core), the Java protocol-composition
-framework. Protocols are written as Go types implementing `Start(ctx)` and
-`Init(ctx)`. The runtime handles event-loop concurrency, session establishment
-over TCP, type-safe message dispatch, retries, panic recovery, and
-inter-protocol coordination via Request/Reply and Notifications.
+**A protocol-composition runtime for Go — Babel for Go.** Distributed
+protocols (membership, gossip, consensus, replication...) compose
+naturally as layers: a gossip protocol asks a membership protocol "who
+are my neighbors?" and broadcasts to the answer; a consensus protocol
+asks "is this node still alive?" and routes around it if not. protorun
+is the substrate for that composition, heavily inspired by
+[Babel](https://github.com/pfouto/babel-core) (Java) — nothing else in
+Go occupies this niche. Protocols are Go types implementing
+`Start(ctx)` and `Init(ctx)`; the runtime handles per-protocol
+event-loop concurrency, session establishment (TCP or QUIC), type-safe
+message dispatch, retries, panic recovery/supervision, and
+inter-protocol coordination via typed Request/Reply and Notifications.
 
 > **Status:** pre-v1. The public API is settling but breaking changes are
 > still on the table. See [`TODO.md`](TODO.md) for what's planned next.
-
-## Why
-
-Distributed protocols (membership, gossip, consensus, replication...) compose
-naturally as layers. A gossip protocol asks a membership protocol "who are
-my neighbors?" and uses the answer to broadcast. A consensus protocol asks
-a membership protocol "is this node still alive?" and routes around if not.
-
-protorun gives you the substrate for that composition without the
-boilerplate: message routing by Go-type wire identifier, per-protocol event
-loops that serialize handler execution (so you can mutate state without
-locking), and IPC primitives (Request/Reply, fan-out Notifications) so
-protocols on the same runtime can coordinate without going through the
-network.
 
 ## Quick start
 
@@ -86,6 +78,56 @@ A complete two-binary version of this example lives at
 session events, and a 10-node integration test, see
 [`cmd/gossip/`](cmd/gossip/): a membership protocol stacked under an
 eager-push gossip protocol.
+
+## How protorun compares
+
+protorun is not an actor framework, and doesn't compete with one on
+actors, clustering, or supervision trees — see
+[`docs/concurrency-model.md`](docs/concurrency-model.md) for the full
+argument. The table below is factual, not a leaderboard (per each
+project's own public docs at the time of writing — check upstream for
+the current state):
+
+| | **protorun** | Proto.Actor (Go) | Ergo | GoAkt | Hollywood |
+|---|---|---|---|---|---|
+| Unit of composition | a protocol layer on a node — a small fixed set wired at startup | an actor, dynamically spawned, PID-addressed | an actor/process, PID- or name-addressed | an actor or "grain", location-transparent | an actor, PID-addressed |
+| Coordination model | typed IPC contracts (Request/Reply, Notifications) between layers | direct PID references | direct PID/registered-name references | direct PID/name references | direct PID references |
+| Membership/broadcast batteries | HyParView + Plumtree shipped in-tree (`protocols/`) | none shipped; clusters via Consul.IO | pub/sub + service discovery via external registrars (etcd, Saturn) | pluggable discovery (Consul/etcd/Kubernetes/NATS/mDNS); no shipped gossip algorithm | none shipped |
+| Deterministic full-stack simulation | `prototest.Sim`: seeded scheduler, virtual clock, real runtimes | not documented | not documented | not documented | not documented |
+| Zero-dependency core | yes — root module is stdlib-only; interop (protobuf, QUIC, OTel, YAML) lives in nested modules | no — protobuf + gRPC | yes, advertised for the core; external registrars are opt-in | no — protobuf/CBOR + Consul/etcd/NATS clients | not documented; protobuf + dRPC transport suggests dependencies |
+
+Where they win decisively: actor population scale (thousands of
+short-lived, individually addressable actors), remote actor
+references, clustering providers, and (Ergo, GoAkt) OTP-style
+supervision trees. protorun optimizes for a different job: a handful
+of protocol layers that need typed contracts, session-lifecycle
+awareness, and a way to prove the whole stack converges before it ever
+touches a socket.
+
+## Test a whole protocol stack before you open a socket
+
+The headline capability: `prototest.Sim` runs **real `Runtime`s, real
+protocols, real IPC** — not a model of them — under a seeded scheduler
+and a virtual clock. A 30-second partition/heal convergence test
+finishes in milliseconds and reproduces byte-for-byte given the same
+seed:
+
+```go
+sim := prototest.NewSim(t, prototest.WithSeed(42))
+a := sim.Node(hostA, newMyProto(hostA, hostB))
+b := sim.Node(hostB, newMyProto(hostB, hostA))
+
+sim.Run(1 * time.Second)             // let sessions establish
+sim.Mesh().Cut(hostA, hostB)         // partition mid-run
+sim.Run(5 * time.Second)             // ... assert divergence ...
+sim.Mesh().Heal(hostA, hostB)        // reachable again (no auto-reconnect)
+
+ok := sim.RunUntil(func() bool { return converged(a) && converged(b) },
+    30*time.Second)
+```
+
+See [Testing](#testing) below and [`docs/simulation.md`](docs/simulation.md)
+for the mechanism, the determinism contract, and fault injection.
 
 ## Architecture
 
@@ -197,6 +239,27 @@ For a custom codec, keep the explicit two-call form —
   shops with existing `.proto` definitions. Lives in its own module so the
   core stays zero-dependency.
 
+### Send's error is local-only — read this before you check it
+
+> **`ctx.Send` returning `nil` does not mean the peer received anything.**
+> The error return and actual delivery are two different things:
+>
+> - The return value is **synchronous and local**: it reports failures that
+>   never left this process — `ErrNoCodec` (no codec registered for the
+>   message type), or no session layer configured. Nothing about the
+>   network or the peer is checked before `Send` returns.
+> - Whether the message reached the peer is **asynchronous and reported
+>   through session events**, not through this call. A dead connection, a
+>   mid-flight drop, or a peer that never completed its handshake all
+>   still return `nil` from `Send` — the failure shows up later as
+>   `SessionDisconnected` / `SessionFailed` / `SessionGivenUp` on whoever
+>   implements `SessionDisconnectedHandler` / `SessionGivenUpHandler` for
+>   that peer.
+>
+> If a protocol needs proof of delivery, build it at the application
+> layer (an ack message, or `SendRequest`/`Responder` for a real
+> round-trip) — `Send` only ever promises the local half.
+
 ### Inter-protocol coordination (IPC)
 
 Two patterns, both same-runtime only (cross-node still goes through the
@@ -292,6 +355,41 @@ protocol; `Escalate` cancels the runtime and `Run` returns an
 `ErrProtocolFailed`-wrapped error. Every outcome publishes a
 `ProtocolFailed` notification siblings can subscribe to.
 
+### Configuration
+
+The core module reads no config files — `protorun.New` takes plain Go
+values and `Option`s. For YAML-driven deployments, the nested
+[`config`](config/) module loads a document with a reserved `runtime:`
+block (logging level/components/format) plus arbitrary named sections
+your own code decodes with `config.Section[T]`. Protocols receive their
+config the same way they receive everything else: as a constructor
+argument, no framework magic.
+
+```go
+cfg, _ := config.Load("node.yaml")
+hv, _ := config.Section[hyparview.Config](cfg, "hyparview")
+rt := protorun.New(self, cfg.Runtime().Options()...)
+rt.Register(hyparview.New(self, hv))
+```
+
+See [`cmd/pingpong`](cmd/pingpong/) for a complete example.
+
+### Metrics
+
+`protorun.WithMetrics(m)` plugs a `Metrics` implementation (Counter +
+Histogram, structured `Attr`s) into the runtime's instrumented paths
+(dispatch, IPC, mailbox depth/drops, sessions, panics, restarts — see
+`metrics.go`). The default is a no-op. For OpenTelemetry, the nested
+[`otel`](otel/) module adapts a `metric.Meter`:
+
+```go
+rt := protorun.New(self, protorun.WithMetrics(otelmetrics.Metrics(meter)))
+```
+
+Instruments are created once per metric name and cached; a failed
+instrument creation is reported once via OTel's own error handler and
+that name becomes a permanent no-op — metrics never panic the hot path.
+
 ## Testing
 
 Test protocols against `prototest`, not TCP. An in-memory mesh stands in
@@ -379,19 +477,33 @@ HyParView-over-TCP demo.
 
 ## Documentation
 
+The full docs set lives in [`docs/README.md`](docs/README.md), organized
+as a tutorial, how-to guides, reference, and explanation
+([Diátaxis](https://diataxis.fr)):
+
+- **Tutorial:** [your first protocol](docs/tutorial.md), zero to a
+  passing deterministic test.
+- **How-tos:** [TLS/mTLS](docs/how-to-tls.md),
+  [a custom codec](docs/how-to-custom-codec.md),
+  [a custom transport backend](docs/how-to-custom-transport.md).
+- **Reference:** [wire format](docs/wire-format.md),
+  [benchmarks](docs/benchmarks.md).
+- **Explanation:** [concurrency model](docs/concurrency-model.md) (and
+  why protocol composition isn't actors),
+  [deterministic simulation](docs/simulation.md),
+  [the protocol library](docs/protocols.md).
+
+Plus:
+
 - Full API reference: `go doc github.com/antonionduarte/protorun`
 - Pingpong example: [`cmd/pingpong/`](cmd/pingpong/)
 - Gossip example (membership + eager-push gossip + 10-node integration
   test): [`cmd/gossip/`](cmd/gossip/)
 - Broadcast example (Plumtree over HyParView over TCP):
   [`cmd/broadcast/`](cmd/broadcast/)
-- Protocol library (membership contract, HyParView, Plumtree):
-  [`docs/protocols.md`](docs/protocols.md)
-- Deterministic simulation guide: [`docs/simulation.md`](docs/simulation.md)
-- TLS / mTLS how-to: [`docs/how-to-tls.md`](docs/how-to-tls.md)
-- Wire format details: [`docs/wire-format.md`](docs/wire-format.md), plus
-  the package doc on `transport` and `wire`.
 - QUIC transport backend: [`transport/quic/`](transport/quic/)
+- YAML config module: [`config/`](config/)
+- OpenTelemetry metrics adapter: [`otel/`](otel/)
 
 ## Build, test, lint
 

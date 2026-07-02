@@ -41,10 +41,26 @@ type (
 		Disconnect(host transport.Host) error
 	}
 
-	// Sender is the capability for sending application messages to a
-	// peer. Send returns an error synchronously (e.g. ErrNoCodec); the
-	// actual delivery is asynchronous and surfaces via SessionFailed
-	// events on the receive side.
+	// Sender is the capability for sending application messages to a peer.
+	//
+	// IMPORTANT — Send's error is split across two channels, on purpose:
+	//
+	//   - The returned error is SYNCHRONOUS and LOCAL ONLY: it means the
+	//     send was rejected before a byte left this process (ErrNoCodec —
+	//     no codec registered for msg's type — or the session layer being
+	//     absent/cancelled). A nil error does not mean the peer received
+	//     anything; it means the local half of the send succeeded.
+	//   - Whether the message actually reached the peer is an ASYNCHRONOUS
+	//     property of the session, not of this call. If the connection is
+	//     down, drops mid-flight, or the peer never acks at the transport
+	//     level, Send still returns nil — the failure surfaces later, to
+	//     everyone watching this peer, as SessionDisconnected /
+	//     SessionFailed / SessionGivenUp (see SessionDisconnectedHandler /
+	//     SessionGivenUpHandler). There is no per-message delivery receipt.
+	//
+	// Do not treat a nil return as "delivered". If a protocol needs
+	// delivery confirmation, build it at the application level (an ack
+	// message, a request/reply) — Send only promises the local half.
 	Sender interface {
 		Send(msg Message, to transport.Host) error
 	}

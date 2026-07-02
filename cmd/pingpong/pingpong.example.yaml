@@ -1,7 +1,13 @@
-logging:
-  level: debug
-  components: ["protocol", "session", "transport", "runtime"]
-  format: text
-
+# Reserved block: the runtime's own logging config. See
+# github.com/antonionduarte/protorun/config for the full schema.
 runtime:
-  channelBuffer: 10
+  logging:
+    level: debug
+    components: ["protocol", "session", "transport", "runtime"]
+    format: text
+
+# Everything else is a named section decoded on demand by the program
+# that owns it — here, config.Section[protocol.Config](cfg, "pingpong")
+# in cmd/pingpong/main.go. protorun itself never looks inside this key.
+pingpong:
+  startSeq: 0

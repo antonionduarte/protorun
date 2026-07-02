@@ -15,8 +15,17 @@ type PingPongProtocol struct {
 	ctx    protorun.ProtocolContext
 }
 
-func NewPingPongProtocol(peer transport.Host) *PingPongProtocol {
-	return &PingPongProtocol{peer: peer}
+// Config is the pingpong protocol's own section of the node's YAML
+// config (see the "pingpong:" key in pingpong.example.yaml), decoded
+// via config.Section[Config](f, "pingpong"). It carries no framework
+// meaning; NewPingPongProtocol is the only thing that reads it.
+type Config struct {
+	// StartSeq is the sequence number the first Ping carries.
+	StartSeq uint64 `yaml:"startSeq"`
+}
+
+func NewPingPongProtocol(peer transport.Host, cfg Config) *PingPongProtocol {
+	return &PingPongProtocol{peer: peer, seq: cfg.StartSeq}
 }
 
 func (p *PingPongProtocol) Start(ctx protorun.ProtocolContext) {

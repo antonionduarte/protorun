@@ -5,11 +5,13 @@
 	tools-install hooks-install
 
 # MODULES is every Go module in the repo. The core module (.) stays
-# zero-dependency; the interop codecs under codec/ are nested modules
-# with their own go.mod. go.work (tracked) ties them together for local
-# builds. Targets that must cover the whole repo loop over this list;
-# root-only helpers (run, bench, coverage gate) stay on the core module.
-MODULES := . codec/protobuf transport/quic
+# zero-dependency; codec/protobuf, transport/quic, config, and otel are
+# nested modules with their own go.mod for the third-party deps that
+# would otherwise break that guarantee. go.work (tracked) ties them
+# together for local builds. Targets that must cover the whole repo
+# loop over this list; root-only helpers (run, bench, coverage gate)
+# stay on the core module.
+MODULES := . codec/protobuf transport/quic config otel
 
 # -----------------------------------------------------------------------
 # Build / run

@@ -4,15 +4,40 @@ Pre-launch roadmap lives in [`docs/roadmap.md`](docs/roadmap.md):
 full design-level plans, phase by phase, each ending in a tag.
 Everything below v1.0 may break API and wire format.
 
-## Pending (see docs/roadmap.md for designs)
+## Pending
 
-- [ ] Phase 6 (v0.8.0+): `config` + `otel` nested modules,
-      published benchmarks, Diátaxis docs set, README
-      repositioning, diagnostics polish (unknown-wireID warnings,
-      Send error-semantics callout), v1.0 freeze.
+- [ ] v1.0.0 gate: wire format frozen (version byte already
+      negotiated in Hello), API frozen, CHANGELOG discipline
+      maintained from v0.2.0 onward. Every phase 0-6 is done; this is
+      a release-process gate, not a code deliverable — see
+      `docs/roadmap.md`'s intro.
+
+See [Post-launch](#post-launch) below for what's explicitly deferred
+past v1.0.
 
 ## Done
 
+- [x] Phase 6 (v0.8.0+): nested `config` module (`config.Load`,
+      `config.Section[T]`, strict `yaml.v3` decoding, `f.Runtime().
+      Options()`; replaces `cmd/pingpong`'s private config package)
+      and nested `otel` module (`otel.Metrics(meter)` adapting
+      `protorun.Metrics` onto OpenTelemetry instruments, cached per
+      name, never panicking on a failed instrument creation).
+      `docs/benchmarks.md`: measured numbers (codec cost, `WireID`,
+      mailbox scheduling latency, in-process IPC, real-TCP round
+      trip) plus methodology and an honest actor-framework comparison
+      caveat; two new benchmarks
+      (`BenchmarkMailbox_EnqueueDispatchLatency`,
+      `BenchmarkTCP_RoundTrip`) closed the roadmap's stated gaps.
+      Diagnostics: unknown-wireID warning rate-limited to once per
+      wireID per minute; `Send`'s local-only error semantics get an
+      unmissable doc callout in `protocol.go` and the README. Diátaxis
+      docs set: `docs/README.md` index, `docs/tutorial.md`, `docs/
+      how-to-custom-codec.md`, `docs/how-to-custom-transport.md`,
+      `docs/concurrency-model.md`. README repositioned around
+      "protocol composition runtime — Babel for Go" with an early
+      actor-framework comparison table. See `docs/roadmap.md`'s Phase
+      6 write-up for deviations from the original sketch.
 - [x] Phase 5 (v0.7.0): protocol library under `/protocols` (all
       zero-dependency, in the core module). `protocols/membership`:
       types-only IPC contract (`GetView`/`View{Active}`, `NeighborUp`/
@@ -149,3 +174,28 @@ Everything below v1.0 may break API and wire format.
   one-liner rather than a fork.
 - Connection-pool / multiplexing. One connection per peer pair (TCP
   or QUIC) is fine for protorun's scope.
+
+## Post-launch
+
+Everything the roadmap explicitly deferred past v1.0, gathered in one
+place now that every numbered phase is done:
+
+- **SWIM.** Out of scope by design — `memberlist` already owns that
+  niche in the Go ecosystem; protorun's membership battery is
+  HyParView (see `protocols/hyparview`).
+- **Consensus showcase.** A Paxos/Raft protocol over protorun would
+  prove the composition model at its hardest (a broadcast/dissemination
+  protocol is comparatively forgiving; consensus is not), but it's a
+  v1.x showcase, not a launch battery.
+- **Sim event-trace recorder.** `prototest.Sim`'s Phase 4 open question
+  ("expose the step hook as a full event-trace recorder, for
+  visualization, or keep it minimal") resolved to minimal for launch —
+  `Step()` reports only whether progress was made. A dedicated
+  recorder (for visualizing a simulated run's schedule) is deferred
+  until there's a concrete visualization consumer to design it against.
+- **A "supervision tuning" how-to.** Sketched for Phase 6's docs set but
+  not written — the README's Supervision section and `docs/roadmap.md`'s
+  Phase 1 write-up already cover `MaxRestarts`/`Window`/`Backoff`/
+  `OnGiveUp` in enough depth that a fourth how-to would mostly repeat
+  them. Revisit if real usage surfaces tuning questions those two
+  sources don't answer.

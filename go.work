@@ -1,5 +1,6 @@
 // This repo is a Go workspace: the zero-dependency core module at the
-// root plus the interop codec modules under codec/. go.work is tracked
+// root plus the nested modules that pull in third-party dependencies
+// (interop codecs, QUIC transport, config, otel). go.work is tracked
 // (not gitignored) so a local checkout resolves the nested modules
 // against the in-tree core without a published version. See
 // CONTRIBUTING.md.
@@ -8,5 +9,7 @@ go 1.26.3
 use (
 	.
 	./codec/protobuf
+	./config
+	./otel
 	./transport/quic
 )

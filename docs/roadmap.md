@@ -6,6 +6,12 @@ API and wire format. Phases are ordered by dependency, not priority:
 the deep breaking changes come first while they are cheap, the
 protocol library comes last because it consumes everything else.
 
+**Every phase below is done.** This document is kept as the design
+record: what shipped, why, and where it deviated from the original
+sketch. The user-facing version of the positioning statement below
+lives in [`docs/concurrency-model.md`](concurrency-model.md); the
+comparison table it implies lives in the root [`README.md`](../README.md).
+
 Positioning this plan serves: **protorun is a protocol-composition
 runtime, not an actor framework.** The addressable unit is a protocol
 layer on a node, not an actor. Nothing in Go occupies that niche
@@ -15,8 +21,12 @@ on: layered protocols with typed IPC contracts, session lifecycle as
 a first-class protocol event surface, and deterministic simulation of
 full protocol stacks.
 
-Each phase ends in a tag (v0.2.0 ... v0.7.0). v1.0.0 is the launch
-gate: everything below done, wire format frozen.
+Each phase ends in a tag (v0.2.0 ... v0.8.0); tags are not yet cut
+(see the note at the top of `CHANGELOG.md`'s Unreleased section).
+v1.0.0 is the launch gate: everything below done, wire format frozen,
+API frozen, CHANGELOG discipline maintained from v0.2.0 onward — the
+one item Phase 6 defined but does not itself close, since it is a
+release-process gate rather than a code deliverable.
 
 ---
 
@@ -534,7 +544,50 @@ launch battery).
 
 ---
 
-## Phase 6 — launch plumbing (v0.8.0 → v1.0.0)
+## Phase 6 — launch plumbing (v0.8.0 → v1.0.0) — done
+
+Delivered: nested `config` module (`config.Load`, `config.Section[T]`,
+`f.Runtime().Options()`, strict `yaml.v3` decoding, replacing
+`cmd/pingpong`'s private config package) and nested `otel` module
+(`otel.Metrics(meter)` adapting `protorun.Metrics` onto OpenTelemetry
+instruments, cached per name, never panicking on a failed instrument
+creation). `docs/benchmarks.md` publishes real measured numbers
+(codec cost, `WireID`, mailbox scheduling latency, in-process IPC,
+and a real-TCP round trip) with methodology and an honest "comparing
+with actor frameworks" section; two benchmarks were added first to
+close gaps (`BenchmarkMailbox_EnqueueDispatchLatency`,
+`BenchmarkTCP_RoundTrip`). Diagnostics: the unknown-wireID warning is
+now rate-limited to once per wireID per minute
+(`unknownWireIDWarnWindow`), and `Sender.Send`'s local-only error
+semantics get an unmissable callout in both `protocol.go` and the
+README. A full Diátaxis docs set landed under `docs/`: `docs/README.md`
+indexes tutorial / how-to / reference / explanation;
+`docs/tutorial.md` ("your first protocol" on `prototest.Sim`),
+`docs/how-to-custom-codec.md`, `docs/how-to-custom-transport.md`, and
+`docs/concurrency-model.md` (the positioning statement above, in
+user-facing prose) are new. The README was repositioned around
+"protocol composition runtime — Babel for Go" with an early,
+factual actor-framework comparison table and the seeded-simulation
+pitch moved up top.
+
+Deviations from the sketch below: the benchmarks doc publishes **only**
+numbers measured in this repository — the original sketch's "include
+Hollywood/Ergo in-process numbers with honest framing" is resolved
+instead by linking to those projects' own benchmark pages, because
+publishing a third party's number in this repo (even framed honestly)
+invites exactly the cross-framework ns/op comparison the framing is
+trying to prevent; a link keeps the comparison caveat in the reader's
+hands. The how-to set ships mTLS, custom codec, and custom transport as
+planned; a "supervision tuning" how-to from the original sketch did not
+ship — supervision's README section and `docs/roadmap.md`'s Phase 1
+write-up already cover the tuning knobs (`MaxRestarts`, `Window`,
+`Backoff`, `OnGiveUp`) in enough depth that a fourth how-to would mostly
+repeat them. "Loud startup error path for missing network layer" from
+the original sketch was already satisfied pre-Phase-6: `Start`/`Run`
+have returned the distinct `ErrNoNetworkLayer`/`ErrNoSessionLayer`
+sentinels since v0.1.0, which every example's `if err := rt.Run(); err
+!= nil { panic(err) }` pattern already surfaces loudly; no additional
+change was needed.
 
 - **`config` (nested module):** YAML runtime config with
   per-protocol sections. `config.Section[T](cfg, "hyparview")`
@@ -586,12 +639,23 @@ needs the Clock seam and ordered mailboxes; the protocol library
 needs new timers, `Handle`, and the Sim harness for its test suites;
 QUIC needs the Address migration.
 
-## Open questions (decide when the phase starts)
+## Open questions
 
-- Phase 0: does `Unbounded` mailbox justify existing at launch, or
-  is it an attractive nuisance? (Lean: ship it, strict-mode warn.)
-- Phase 4: expose the Sim step hook as a full event-trace recorder
-  (for visualization) or keep it minimal? (Lean: minimal at launch.)
+All phases are done, so every open question below has been decided by
+what actually shipped rather than left open.
+
+- Phase 0 (RESOLVED — shipped): `OverflowUnbounded` shipped as leaned,
+  with a strict-mode warning on sustained high mailbox occupancy
+  (>80%) rather than being cut. It remains an explicit opt-in per
+  protocol (`WithMailbox`), not a default, so the memory-growth risk
+  requires a deliberate choice.
+- Phase 4 (RESOLVED — minimal, as leaned): the Sim exposes
+  `Run`/`RunUntil`/`Step` rather than a full step-hook event-trace
+  recorder. `Step()` performs one unit of scheduling progress and
+  reports whether it made any, which is enough for fine-grained
+  assertions between deliveries; a dedicated trace recorder for
+  visualization was not built and is not currently planned (see
+  Post-launch in `TODO.md` if that changes).
 - Phase 5 (RESOLVED — option (a), route through the active view):
   HyParView shuffles are routed entirely over active-view links; no
   transient sessions to passive peers are opened. The Shuffle request is

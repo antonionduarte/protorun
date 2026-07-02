@@ -119,7 +119,20 @@ type Runtime struct {
 	// WireName()" nudge to once per wire id. map[uint64]struct{}, only
 	// ever touched when strict is on. See strictWireNameNudge.
 	wireNameWarned sync.Map
+
+	// unknownWireIDWarned rate-limits the "received message for unknown
+	// wireID" log line to once per wireID per unknownWireIDWarnWindow.
+	// map[uint64]time.Time (last-warned instant). See warnUnknownWireID.
+	unknownWireIDWarned sync.Map
 }
+
+// unknownWireIDWarnWindow bounds how often processMessage logs about a
+// given unrecognized wireID. A stale peer, a version skew, or a wire-
+// format bug can spam one bad id at message rate; without a limit that
+// turns into one log line per message. The dropped-message metric
+// (protorun.message.dropped_unknown_id) is unaffected and still
+// increments on every occurrence — only the log line is throttled.
+const unknownWireIDWarnWindow = time.Minute
 
 // SessionConnectedHandler can be implemented by a protocol that wants to be
 // notified whenever a session is established with some Host.
@@ -762,10 +775,7 @@ func (r *Runtime) processMessage(buffer bytes.Buffer, from transport.Host) {
 
 	entry, exists := r.codecs.Get(wireID)
 	if !exists {
-		logger.Warn("received message for unknown wireID",
-			"from", from.String(),
-			"wireID", fmt.Sprintf("%#x", wireID),
-		)
+		r.warnUnknownWireID(wireID, from)
 		r.metrics.Counter("protorun.message.dropped_unknown_id", 1, wireIDAttr)
 		return
 	}
@@ -788,6 +798,26 @@ func (r *Runtime) processMessage(buffer bytes.Buffer, from transport.Host) {
 	)
 	r.metrics.Counter("protorun.message.dispatched", 1, wireIDAttr)
 	protocol.enqueue(r.ctx, protoEvent{kind: evMessage, msg: message, from: from})
+}
+
+// warnUnknownWireID logs "received message for unknown wireID" at most
+// once per wireID per unknownWireIDWarnWindow (read via r.clock, so
+// tests can control it). The check-then-store is not atomic — under a
+// race two callers can both log for the same wireID right at the
+// window boundary — which is fine for a best-effort log throttle; it
+// never under-throttles by more than one extra line.
+func (r *Runtime) warnUnknownWireID(wireID uint64, from transport.Host) {
+	now := r.clock.Now()
+	if last, ok := r.unknownWireIDWarned.Load(wireID); ok {
+		if now.Sub(last.(time.Time)) < unknownWireIDWarnWindow {
+			return
+		}
+	}
+	r.unknownWireIDWarned.Store(wireID, now)
+	r.Logger().Warn("received message for unknown wireID",
+		"from", from.String(),
+		"wireID", fmt.Sprintf("%#x", wireID),
+	)
 }
 
 // WithTCPTransport wires the runtime's transport + session layers with

@@ -37,9 +37,9 @@ jobs:
       - name: go test
         run: go test ./... -race -coverprofile=coverage.out -covermode=atomic
 
-      # Nested modules (interop codecs, QUIC transport) have their own
-      # go.mod and are not covered by the root ./... patterns, so build+test
-      # them explicitly.
+      # Nested modules (interop codecs, QUIC transport, config, otel) have
+      # their own go.mod and are not covered by the root ./... patterns,
+      # so build+test them explicitly.
       - name: nested module — codec/protobuf
         run: |
           cd codec/protobuf
@@ -49,6 +49,18 @@ jobs:
       - name: nested module — transport/quic
         run: |
           cd transport/quic
+          go build ./...
+          go test ./... -race
+
+      - name: nested module — config
+        run: |
+          cd config
+          go build ./...
+          go test ./... -race
+
+      - name: nested module — otel
+        run: |
+          cd otel
           go build ./...
           go test ./... -race
 
@@ -85,3 +97,9 @@ jobs:
 
       - name: vulnerability scan — transport/quic
         run: cd transport/quic && go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+      - name: vulnerability scan — config
+        run: cd config && go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+      - name: vulnerability scan — otel
+        run: cd otel && go run golang.org/x/vuln/cmd/govulncheck@latest ./...

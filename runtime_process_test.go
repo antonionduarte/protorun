@@ -2,12 +2,43 @@ package protorun
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
+	"log/slog"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/antonionduarte/protorun/transport"
 )
+
+// countingHandler counts how many records match substr in their
+// message, guarded by a mutex since processMessage may be exercised
+// from more than one goroutine in principle.
+type countingHandler struct {
+	mu     sync.Mutex
+	substr string
+	count  int
+}
+
+func (h *countingHandler) Enabled(context.Context, slog.Level) bool { return true }
+func (h *countingHandler) Handle(_ context.Context, r slog.Record) error {
+	if strings.Contains(r.Message, h.substr) {
+		h.mu.Lock()
+		h.count++
+		h.mu.Unlock()
+	}
+	return nil
+}
+func (h *countingHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h *countingHandler) WithGroup(string) slog.Handler      { return h }
+
+func (h *countingHandler) Count() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.count
+}
 
 // processFrame builds the on-wire bytes for a single application-level
 // message: [WireID(uint64 LE)][payload]. Used by the processMessage tests.
@@ -52,6 +83,45 @@ func TestProcessMessage_UnknownWireID(t *testing.T) {
 	rt := New(transport.NewHost(0, "127.0.0.1"))
 	frame := processFrame(t, 0xdeadbeef, nil)
 	rt.processMessage(frame, transport.NewHost(8888, "127.0.0.1"))
+}
+
+// TestProcessMessage_UnknownWireIDWarnIsRateLimited proves that
+// repeated messages for the same unknown wireID inside
+// unknownWireIDWarnWindow log only once, and that a distinct wireID
+// (or the same one after the window elapses) logs again.
+func TestProcessMessage_UnknownWireIDWarnIsRateLimited(t *testing.T) {
+	handler := &countingHandler{substr: "unknown wireID"}
+	clock := newManualClock()
+	rt := New(transport.NewHost(0, "127.0.0.1"),
+		WithClock(clock),
+		WithLogger(slog.New(handler)),
+	)
+
+	from := transport.NewHost(8888, "127.0.0.1")
+	send := func(wireID uint64) {
+		frame := processFrame(t, wireID, nil)
+		rt.processMessage(frame, from)
+	}
+
+	send(0xdeadbeef)
+	send(0xdeadbeef)
+	send(0xdeadbeef)
+	if got := handler.Count(); got != 1 {
+		t.Fatalf("warn count after 3 sends of the same wireID within the window = %d, want 1", got)
+	}
+
+	// A different wireID is not covered by the first one's rate limit.
+	send(0xfeedface)
+	if got := handler.Count(); got != 2 {
+		t.Fatalf("warn count after a second distinct wireID = %d, want 2", got)
+	}
+
+	// Advancing past the window re-arms the first wireID.
+	clock.Advance(unknownWireIDWarnWindow + time.Second)
+	send(0xdeadbeef)
+	if got := handler.Count(); got != 3 {
+		t.Fatalf("warn count after the window elapsed = %d, want 3", got)
+	}
 }
 
 // TestProcessMessage_DecodeError ensures that if the codec returns an error
