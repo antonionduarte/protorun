@@ -3,7 +3,7 @@ package protocol
 import (
 	"testing"
 
-	"github.com/antonionduarte/protorun"
+	"github.com/antonionduarte/protorun/pkg/protorun"
 )
 
 // Pingpong registers its messages with protorun.Handle, which selects

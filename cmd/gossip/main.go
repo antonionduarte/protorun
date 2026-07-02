@@ -18,10 +18,10 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/antonionduarte/protorun"
 	"github.com/antonionduarte/protorun/cmd/gossip/gossip"
 	"github.com/antonionduarte/protorun/cmd/gossip/membership"
-	"github.com/antonionduarte/protorun/transport"
+	"github.com/antonionduarte/protorun/pkg/protorun"
+	"github.com/antonionduarte/protorun/pkg/transport"
 )
 
 // portList is a flag.Value that accumulates -contact-port flags into a slice.

@@ -42,25 +42,25 @@ jobs:
       # so build+test them explicitly.
       - name: nested module — codec/protobuf
         run: |
-          cd codec/protobuf
+          cd pkg/codec/protobuf
           go build ./...
           go test ./... -race
 
       - name: nested module — transport/quic
         run: |
-          cd transport/quic
+          cd pkg/transport/quic
           go build ./...
           go test ./... -race
 
       - name: nested module — config
         run: |
-          cd config
+          cd pkg/config
           go build ./...
           go test ./... -race
 
       - name: nested module — otel
         run: |
-          cd otel
+          cd pkg/otel
           go build ./...
           go test ./... -race
 
@@ -93,13 +93,13 @@ jobs:
         run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
       - name: vulnerability scan — codec/protobuf
-        run: cd codec/protobuf && go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+        run: cd pkg/codec/protobuf && go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
       - name: vulnerability scan — transport/quic
-        run: cd transport/quic && go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+        run: cd pkg/transport/quic && go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
       - name: vulnerability scan — config
-        run: cd config && go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+        run: cd pkg/config && go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
       - name: vulnerability scan — otel
-        run: cd otel && go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+        run: cd pkg/otel && go run golang.org/x/vuln/cmd/govulncheck@latest ./...

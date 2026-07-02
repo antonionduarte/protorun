@@ -5,7 +5,7 @@ possible one. Everything above `transport.Layer` — the Hello/Ack
 `SessionLayer` handshake, the runtime's dispatch, `Handle`, IPC — is
 written against the `Layer` interface, not against sockets. This page
 shows the interface, then walks the QUIC backend
-([`transport/quic`](../transport/quic/)) as a worked example of a real
+([`pkg/transport/quic`](../pkg/transport/quic/)) as a worked example of a real
 second implementation, so you can see exactly what "written against
 the interface" bought in practice.
 
@@ -50,7 +50,7 @@ per-connection stream framing, or something else entirely (a message
 queue, `net.PacketConn`, an in-memory channel) — is exactly the part
 `Layer` exists to abstract over.
 
-## Worked example: `transport/quic`
+## Worked example: `pkg/transport/quic`
 
 The QUIC backend is a real second `Layer` implementation, built to
 validate the abstraction (see the Phase 3 write-up in
@@ -116,8 +116,8 @@ Don't reach for a custom `Layer` to unit-test protocols — that's what
 [`prototest`](simulation.md) is for (an in-memory mesh at the
 `Sessions` seam, not the `Layer` seam, so it doesn't require a `Layer`
 implementation at all). Build a custom `Layer` when you have a real
-transport to carry bytes over; test *it* the way `transport/quic` tests
+transport to carry bytes over; test *it* the way `pkg/transport/quic` tests
 itself: a layer-only suite (dial/listen, framing, events) plus a
 `SessionLayer`-over-your-layer suite (handshake, established peers)
 plus a two-`Runtime` integration suite — see
-[`transport/quic`](../transport/quic/)'s test files for the pattern.
+[`pkg/transport/quic`](../pkg/transport/quic/)'s test files for the pattern.

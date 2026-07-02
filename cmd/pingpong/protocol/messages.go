@@ -1,6 +1,6 @@
 package protocol
 
-import "github.com/antonionduarte/protorun"
+import "github.com/antonionduarte/protorun/pkg/protorun"
 
 // PingMessage and PongMessage are pure fixed-size payloads. The
 // protocol registers them with protorun.Handle, which picks the

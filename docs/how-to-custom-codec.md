@@ -44,8 +44,8 @@ package chat
 import (
 	"bytes"
 
-	"github.com/antonionduarte/protorun"
-	"github.com/antonionduarte/protorun/wire"
+	"github.com/antonionduarte/protorun/pkg/protorun"
+	"github.com/antonionduarte/protorun/pkg/wire"
 )
 
 // ChatMessage owns its own encoding instead of using the reflective
@@ -117,7 +117,7 @@ protorun.RegisterHandler(ctx, p.onMyMessage)     // func(*MyMessage, transport.H
 
 This is exactly the shape the framework's own shipped codecs use —
 `BinaryCodec[M]` (`codec.go`), `JSONCodec[M]` (`jsoncodec.go`), and the
-nested [`codec/protobuf`](../codec/protobuf/) module's
+nested [`pkg/codec/protobuf`](../pkg/codec/protobuf/) module's
 `ProtoCodec[M proto.Message]`, which wraps a message you didn't define
 (a generated protobuf type) the same way you'd wrap any external type:
 

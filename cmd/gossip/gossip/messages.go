@@ -2,7 +2,7 @@
 // the membership protocol.
 package gossip
 
-import "github.com/antonionduarte/protorun"
+import "github.com/antonionduarte/protorun/pkg/protorun"
 
 // Message is a single gossip envelope: an ID for deduplication, plus
 // an opaque payload. Forwarded verbatim through the network until

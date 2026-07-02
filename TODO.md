@@ -38,16 +38,16 @@ past v1.0.
       "protocol composition runtime — Babel for Go" with an early
       actor-framework comparison table. See `docs/roadmap.md`'s Phase
       6 write-up for deviations from the original sketch.
-- [x] Phase 5 (v0.7.0): protocol library under `/protocols` (all
-      zero-dependency, in the core module). `protocols/membership`:
+- [x] Phase 5 (v0.7.0): protocol library under `/pkg/protocols` (all
+      zero-dependency, in the core module). `pkg/protocols/membership`:
       types-only IPC contract (`GetView`/`View{Active}`, `NeighborUp`/
       `NeighborDown`) — the interchangeability seam, no codecs/WireName
-      (IPC is local-only). `protocols/hyparview`: faithful HyParView
+      (IPC is local-only). `pkg/protocols/hyparview`: faithful HyParView
       (active/passive views, JOIN, ForwardJoin ARWL/PRWL walks, periodic
       Shuffle routed over active links with a path-retracing reply — no
       transient sessions, resolving the roadmap open question — Neighbor
       promotion with the empty-view priority rule, session-layer failure
-      detection). `protocols/plumtree`: faithful Plumtree over the
+      detection). `pkg/protocols/plumtree`: faithful Plumtree over the
       contract (eager/lazy sets, batched IHAVE, GRAFT/PRUNE tree repair,
       sender+seq ids, bounded GRAFT cache). Every wire message has
       `WireName()` + a `SelfMarshaler` codec. Sim-based suites
@@ -76,7 +76,7 @@ past v1.0.
       seam + retry table unchanged, Hello unchanged on the wire);
       `NewTCPLayer` dial/listen hooks (`WithDialFunc`/`WithListenFunc`)
       and `WithTLS` sugar forwarded through `WithTCPTransport`;
-      `transport/quic` nested module (`quic.NewLayer` on `quic-go`, one
+      `pkg/transport/quic` nested module (`quic.NewLayer` on `quic-go`, one
       conn + one bidi stream per peer, same framing, `protorun` ALPN,
       `quic.DevTLS`); TLS/mTLS + hooks + QUIC layer/session/two-runtime
       tests; `docs/how-to-tls.md`.
@@ -86,7 +86,7 @@ past v1.0.
       normative format in `docs/wire-format.md`; round-trip + fuzz
       tests; benches vs `BinaryCodec`), `Handle` one-line registration
       (picks `WireCodec` or `SelfCodec` via `SelfMarshaler`),
-      `JSONCodec` (core), `codec/protobuf` nested module
+      `JSONCodec` (core), `pkg/codec/protobuf` nested module
       (`ProtoCodec[M proto.Message]`, own go.mod + `replace`, tracked
       `go.work`), strict-mode WireName nudge. `cmd/gossip` and
       `cmd/pingpong` migrated to `Handle`.
@@ -165,7 +165,7 @@ past v1.0.
 ## Considered but out of scope
 
 - HyParView and Plumtree were "out of scope" pre-launch but shipped
-  in Phase 5 as `protocols/hyparview` and `protocols/plumtree`. SWIM
+  in Phase 5 as `pkg/protocols/hyparview` and `pkg/protocols/plumtree`. SWIM
   stays out of scope (memberlist owns that niche); consensus
   (Paxos/Raft over protorun) is a v1.x showcase, not a launch battery.
 - Wire-level TLS / authentication is not baked into the *protocol*
@@ -182,7 +182,7 @@ place now that every numbered phase is done:
 
 - **SWIM.** Out of scope by design — `memberlist` already owns that
   niche in the Go ecosystem; protorun's membership battery is
-  HyParView (see `protocols/hyparview`).
+  HyParView (see `pkg/protocols/hyparview`).
 - **Consensus showcase.** A Paxos/Raft protocol over protorun would
   prove the composition model at its hardest (a broadcast/dissemination
   protocol is comparatively forgiving; consensus is not), but it's a

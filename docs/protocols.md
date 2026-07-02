@@ -1,7 +1,7 @@
-# The protocol library (`protocols/`)
+# The protocol library (`pkg/protocols/`)
 
 protorun ships batteries: real, paper-faithful distributed protocols you
-can stack, run, and swap. They live under `protocols/`, all in the core
+can stack, run, and swap. They live under `pkg/protocols/`, all in the core
 module (zero third-party dependencies), and they dogfood every framework
 capability — sessions, timers, IPC, and the seeded simulation.
 
@@ -9,14 +9,14 @@ There are three packages:
 
 | Package | What it is |
 |---|---|
-| `protocols/membership` | The interchangeability seam: a types-only IPC contract. |
-| `protocols/hyparview` | A partial-view membership protocol (HyParView). |
-| `protocols/plumtree` | An epidemic broadcast-tree protocol (Plumtree). |
+| `pkg/protocols/membership` | The interchangeability seam: a types-only IPC contract. |
+| `pkg/protocols/hyparview` | A partial-view membership protocol (HyParView). |
+| `pkg/protocols/plumtree` | An epidemic broadcast-tree protocol (Plumtree). |
 
 The headline is composition: **Plumtree runs over HyParView without either
 knowing about the other.** They meet only at the membership contract.
 
-## The contract: `protocols/membership`
+## The contract: `pkg/protocols/membership`
 
 `membership` is a package of types with no implementation. A membership
 protocol answers `GetView` with its active view and publishes `NeighborUp`
@@ -37,7 +37,7 @@ request/reply/notification types the runtime routes between them. Any
 dissemination protocol written against these four types works over any
 membership protocol that honours them. `cmd/gossip` proves it from the
 cheap end (a static contact list implements the contract);
-`protocols/hyparview` proves it from the real end (a self-healing overlay
+`pkg/protocols/hyparview` proves it from the real end (a self-healing overlay
 implements the same contract), and Plumtree runs over either unchanged.
 
 **Why no codecs or `WireName`?** IPC in protorun is strictly local —
@@ -48,7 +48,7 @@ membership protocol: HyParView's own peer-to-peer messages (JOIN,
 ForwardJoin, Shuffle, ...) do cross nodes, so they carry codecs and
 `WireName`; the `NeighborUp` it publishes to a local Plumtree does not.
 
-## `protocols/hyparview`
+## `pkg/protocols/hyparview`
 
 A faithful implementation of HyParView (Leitão, Pereira, Rodrigues,
 2007). It maintains two views:
@@ -85,7 +85,7 @@ during promotion, which legitimately opens a session because the peer is
 *becoming* an active-view member. (This is option (a) from the roadmap;
 it was preferred because it needs no framework changes.)
 
-## `protocols/plumtree`
+## `pkg/protocols/plumtree`
 
 A faithful implementation of Plumtree ("Epidemic Broadcast Trees", Leitão
 et al., 2007) over the membership contract. It splits its neighbours into:

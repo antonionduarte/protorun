@@ -7,11 +7,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/antonionduarte/protorun"
-	"github.com/antonionduarte/protorun/protocols/hyparview"
-	"github.com/antonionduarte/protorun/protocols/membership"
-	"github.com/antonionduarte/protorun/protocols/plumtree"
-	"github.com/antonionduarte/protorun/transport"
+	"github.com/antonionduarte/protorun/pkg/protocols/hyparview"
+	"github.com/antonionduarte/protorun/pkg/protocols/membership"
+	"github.com/antonionduarte/protorun/pkg/protocols/plumtree"
+	"github.com/antonionduarte/protorun/pkg/protorun"
+	"github.com/antonionduarte/protorun/pkg/transport"
 )
 
 // nextBasePort hands out fresh port ranges for this package's runs

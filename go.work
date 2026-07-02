@@ -8,8 +8,8 @@ go 1.26.3
 
 use (
 	.
-	./codec/protobuf
-	./config
-	./otel
-	./transport/quic
+	./pkg/codec/protobuf
+	./pkg/config
+	./pkg/otel
+	./pkg/transport/quic
 )

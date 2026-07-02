@@ -6,10 +6,10 @@ import (
 	"flag"
 	"log/slog"
 
-	"github.com/antonionduarte/protorun"
 	"github.com/antonionduarte/protorun/cmd/pingpong/protocol"
-	"github.com/antonionduarte/protorun/config"
-	"github.com/antonionduarte/protorun/transport"
+	"github.com/antonionduarte/protorun/pkg/config"
+	"github.com/antonionduarte/protorun/pkg/protorun"
+	"github.com/antonionduarte/protorun/pkg/transport"
 )
 
 func main() {

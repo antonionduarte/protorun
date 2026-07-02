@@ -24,7 +24,7 @@ Top down, a full application frame:
 The `Payload` bytes are whatever the registered `Codec[M]` produces.
 `BinaryCodec` (fixed-size structs) and `WireCodec` (the reflective
 default) are framework-owned; their formats are specified below.
-`SelfCodec`, `JSONCodec`, and the nested `codec/protobuf` module defer
+`SelfCodec`, `JSONCodec`, and the nested `pkg/codec/protobuf` module defer
 to the message type or an external library and are not framework wire
 formats.
 

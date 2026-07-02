@@ -25,8 +25,8 @@ import (
     "context"
     "log/slog"
 
-    "github.com/antonionduarte/protorun"
-    "github.com/antonionduarte/protorun/transport"
+    "github.com/antonionduarte/protorun/pkg/protorun"
+    "github.com/antonionduarte/protorun/pkg/transport"
 )
 
 type PingMessage struct {
@@ -92,7 +92,7 @@ the current state):
 |---|---|---|---|---|---|
 | Unit of composition | a protocol layer on a node — a small fixed set wired at startup | an actor, dynamically spawned, PID-addressed | an actor/process, PID- or name-addressed | an actor or "grain", location-transparent | an actor, PID-addressed |
 | Coordination model | typed IPC contracts (Request/Reply, Notifications) between layers | direct PID references | direct PID/registered-name references | direct PID/name references | direct PID references |
-| Membership/broadcast batteries | HyParView + Plumtree shipped in-tree (`protocols/`) | none shipped; clusters via Consul.IO | pub/sub + service discovery via external registrars (etcd, Saturn) | pluggable discovery (Consul/etcd/Kubernetes/NATS/mDNS); no shipped gossip algorithm | none shipped |
+| Membership/broadcast batteries | HyParView + Plumtree shipped in-tree (`pkg/protocols/`) | none shipped; clusters via Consul.IO | pub/sub + service discovery via external registrars (etcd, Saturn) | pluggable discovery (Consul/etcd/Kubernetes/NATS/mDNS); no shipped gossip algorithm | none shipped |
 | Deterministic full-stack simulation | `prototest.Sim`: seeded scheduler, virtual clock, real runtimes | not documented | not documented | not documented | not documented |
 | Zero-dependency core | yes — root module is stdlib-only; interop (protobuf, QUIC, OTel, YAML) lives in nested modules | no — protobuf + gRPC | yes, advertised for the core; external registrars are opt-in | no — protobuf/CBOR + Consul/etcd/NATS clients | not documented; protobuf + dRPC transport suggests dependencies |
 
@@ -160,7 +160,7 @@ for the mechanism, the determinism contract, and fault injection.
 | transport.Address)                                   |
 |  - length-prefixed framing                           |
 |  - TCP (reference) with optional TLS/mTLS, or QUIC    |
-|    (transport/quic module) — SessionLayer runs        |
+|    (pkg/transport/quic module) — SessionLayer runs    |
 |    unchanged over either                             |
 +------------------------------------------------------+
 ```
@@ -179,7 +179,7 @@ rt := protorun.New(self,
 
 `transport.WithDialFunc` / `transport.WithListenFunc` expose the raw
 dial/listen seams for anything TLS sugar doesn't cover. The QUIC backend
-lives in the nested [`transport/quic`](transport/quic/) module (it pulls
+lives in the nested [`pkg/transport/quic`](pkg/transport/quic/) module (it pulls
 in `quic-go`; the core module stays zero-dependency) and is wired via
 `protorun.WithTransport(quicLayer, sessionLayer)`.
 
@@ -235,7 +235,7 @@ For a custom codec, keep the explicit two-call form —
   lowest-overhead option when your message has no variable-length fields.
 - **`JSONCodec[*M]`** — `encoding/json`, for development and wire
   inspection. Not a stable wire format.
-- **`codec/protobuf` (nested module)** — `ProtoCodec[M proto.Message]` for
+- **`pkg/codec/protobuf` (nested module)** — `ProtoCodec[M proto.Message]` for
   shops with existing `.proto` definitions. Lives in its own module so the
   core stays zero-dependency.
 
@@ -359,7 +359,7 @@ protocol; `Escalate` cancels the runtime and `Run` returns an
 
 The core module reads no config files — `protorun.New` takes plain Go
 values and `Option`s. For YAML-driven deployments, the nested
-[`config`](config/) module loads a document with a reserved `runtime:`
+[`pkg/config`](pkg/config/) module loads a document with a reserved `runtime:`
 block (logging level/components/format) plus arbitrary named sections
 your own code decodes with `config.Section[T]`. Protocols receive their
 config the same way they receive everything else: as a constructor
@@ -380,7 +380,7 @@ See [`cmd/pingpong`](cmd/pingpong/) for a complete example.
 Histogram, structured `Attr`s) into the runtime's instrumented paths
 (dispatch, IPC, mailbox depth/drops, sessions, panics, restarts — see
 `metrics.go`). The default is a no-op. For OpenTelemetry, the nested
-[`otel`](otel/) module adapts a `metric.Meter`:
+[`pkg/otel`](pkg/otel/) module adapts a `metric.Meter`:
 
 ```go
 rt := protorun.New(self, protorun.WithMetrics(otelmetrics.Metrics(meter)))
@@ -433,22 +433,22 @@ and the full contract.
 ## Protocol library
 
 protorun ships batteries — real, paper-faithful distributed protocols you
-can stack and swap, all under [`protocols/`](protocols/) and all in the
+can stack and swap, all under [`pkg/protocols/`](pkg/protocols/) and all in the
 core module (no third-party dependencies):
 
-- **`protocols/membership`** — the interchangeability seam. A types-only
+- **`pkg/protocols/membership`** — the interchangeability seam. A types-only
   IPC contract: a membership protocol answers `GetView` (returning its
   active view) and publishes `NeighborUp` / `NeighborDown`; a
   dissemination protocol consumes exactly those. Interchangeability comes
   from typed IPC contracts, not Go interfaces — the thing actor
   frameworks structurally can't express. Being local IPC, the contract
   carries no codecs and no `WireName`.
-- **`protocols/hyparview`** — a faithful HyParView (Leitão et al., 2007):
+- **`pkg/protocols/hyparview`** — a faithful HyParView (Leitão et al., 2007):
   a small symmetric session-backed active view plus a larger passive
   view, JOIN + ForwardJoin random walks, periodic shuffle, and
   priority-based promotion on failure. Failure detection rides the
   session layer — no extra heartbeats. Publishes the membership contract.
-- **`protocols/plumtree`** — a faithful Plumtree ("Epidemic Broadcast
+- **`pkg/protocols/plumtree`** — a faithful Plumtree ("Epidemic Broadcast
   Trees", 2007) over the contract: an eager-push spanning tree with
   lazy-push `IHAVE` announcements, self-optimising via GRAFT/PRUNE.
   Originate with a `Broadcast` request; receive a `Delivered` notification
@@ -495,15 +495,15 @@ as a tutorial, how-to guides, reference, and explanation
 
 Plus:
 
-- Full API reference: `go doc github.com/antonionduarte/protorun`
+- Full API reference: `go doc github.com/antonionduarte/protorun/pkg/protorun`
 - Pingpong example: [`cmd/pingpong/`](cmd/pingpong/)
 - Gossip example (membership + eager-push gossip + 10-node integration
   test): [`cmd/gossip/`](cmd/gossip/)
 - Broadcast example (Plumtree over HyParView over TCP):
   [`cmd/broadcast/`](cmd/broadcast/)
-- QUIC transport backend: [`transport/quic/`](transport/quic/)
-- YAML config module: [`config/`](config/)
-- OpenTelemetry metrics adapter: [`otel/`](otel/)
+- QUIC transport backend: [`pkg/transport/quic/`](pkg/transport/quic/)
+- YAML config module: [`pkg/config/`](pkg/config/)
+- OpenTelemetry metrics adapter: [`pkg/otel/`](pkg/otel/)
 
 ## Build, test, lint
 

@@ -9,11 +9,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/antonionduarte/protorun"
 	"github.com/antonionduarte/protorun/cmd/gossip/gossip"
 	staticmembership "github.com/antonionduarte/protorun/cmd/gossip/membership"
-	"github.com/antonionduarte/protorun/protocols/membership"
-	"github.com/antonionduarte/protorun/transport"
+	"github.com/antonionduarte/protorun/pkg/protocols/membership"
+	"github.com/antonionduarte/protorun/pkg/protorun"
+	"github.com/antonionduarte/protorun/pkg/transport"
 )
 
 const (

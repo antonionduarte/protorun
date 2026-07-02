@@ -38,20 +38,21 @@ rest of the plan builds on the final shapes.
 ### 0.1 Module rename — done
 
 Module path is now `github.com/antonionduarte/protorun` (see
-CHANGELOG.md for the previous path). The core package is promoted to
-the module root, and `transport`, `wire`, `prototest` live at the
-repo root too. Import:
+CHANGELOG.md for the previous path). The core package was originally
+promoted to the module root alongside `transport`, `wire`, `prototest`;
+all library packages later moved under `pkg/` (see CHANGELOG's
+Unreleased entry). Import:
 
 ```go
-import "github.com/antonionduarte/protorun"
-import "github.com/antonionduarte/protorun/transport"
+import "github.com/antonionduarte/protorun/pkg/protorun"
+import "github.com/antonionduarte/protorun/pkg/transport"
 ```
 
 The core module stays **zero-dependency** (stdlib only) — that is a
 marketing line Ergo uses and we can too. Everything that needs a
 third-party dep (protobuf codec, QUIC transport, OTel adapter, YAML
-config) becomes a nested module with its own go.mod (`codec/protobuf`,
-`transport/quic`, `otel`, `config`).
+config) becomes a nested module with its own go.mod (`pkg/codec/protobuf`,
+`pkg/transport/quic`, `pkg/otel`, `pkg/config`).
 
 The GitHub repository is renamed to `antonionduarte/protorun`; the
 old name redirects.
@@ -261,7 +262,7 @@ to structs on top of every fixed-size type — normative format in
 against `BinaryCodec`. `Handle(ctx, fn)` infers `M` and registers
 `WireCodec[M]` (or `SelfCodec[M]` when the type implements the new
 `SelfMarshaler`) plus the handler in one call. Interop: `JSONCodec[M]`
-in core and a nested `codec/protobuf` module (`ProtoCodec[M
+in core and a nested `pkg/codec/protobuf` module (`ProtoCodec[M
 proto.Message]`, own go.mod + `replace`, tracked `go.work`, Makefile/CI
 covering both modules). Strict mode gains a once-per-type WireName nudge.
 `cmd/gossip` (hand-rolled codec) and `cmd/pingpong` (BinaryCodec)
@@ -302,7 +303,7 @@ The README quick start shrinks by a third.
 
 ### 2.3 Interop codecs
 
-- `codec/protobuf` (nested module): `ProtoCodec[M proto.Message]`
+- `pkg/codec/protobuf` (nested module): `ProtoCodec[M proto.Message]`
   for shops that already have .proto definitions.
 - `JSONCodec[M]` in core (stdlib): debugging and wire-inspection.
 
@@ -324,7 +325,7 @@ carries the dialer's logical `Host` unchanged on the wire. `NewTCPLayer`
 grows functional options: `WithDialFunc`, `WithListenFunc`, and
 `WithTLS(cfg)` (sugar over `tls.Dialer` / `tls.Listen`), forwarded through
 `WithTCPTransport(ctx, topts...)` so TLS/mTLS is a one-liner; how-to in
-`docs/how-to-tls.md`. New nested module `transport/quic`
+`docs/how-to-tls.md`. New nested module `pkg/transport/quic`
 (`quic.NewLayer` on `quic-go`, one connection + one bidirectional stream
 per peer, identical framing and `LayerIdentifier` byte, distinct
 `protorun` ALPN, `quic.DevTLS` for tests) runs the SessionLayer unchanged
@@ -366,7 +367,7 @@ handshake and framing are unchanged — but the seam makes "layer it
 on top" a one-line reality instead of a fork. Ships with an mTLS
 how-to (self-signed CA, both directions verified).
 
-### 3.3 `transport/quic` (nested module)
+### 3.3 `pkg/transport/quic` (nested module)
 
 QUIC backend on `quic-go`: one bidirectional stream per peer, same
 4-byte length framing and `LayerIdentifier` byte on top. Session
@@ -471,14 +472,14 @@ controlled — but for protocols that follow the authoring contract
 
 ## Phase 5 — protocol library (v0.7.0) — done
 
-Delivered: three zero-dependency packages under `/protocols`.
-`protocols/membership` is the interchangeability seam — a types-only IPC
+Delivered: three zero-dependency packages under `/pkg/protocols`.
+`pkg/protocols/membership` is the interchangeability seam — a types-only IPC
 contract (`GetView`/`View{Active}`, `NeighborUp`/`NeighborDown`) with no
-codecs or WireName because IPC is local-only. `protocols/hyparview` is a
+codecs or WireName because IPC is local-only. `pkg/protocols/hyparview` is a
 faithful HyParView (active/passive views, JOIN + ForwardJoin ARWL/PRWL
 walks, periodic Shuffle, Neighbor promotion with the paper's priority
 rule, session-layer failure detection) publishing the contract.
-`protocols/plumtree` is a faithful Plumtree over the contract (eager/lazy
+`pkg/protocols/plumtree` is a faithful Plumtree over the contract (eager/lazy
 sets from NeighborUp/Down, batched IHAVE, GRAFT/PRUNE tree repair,
 sender+seq message ids, bounded GRAFT cache). Every wire message
 implements `WireName()` and a `SelfMarshaler` codec (Host's int port rules
@@ -496,10 +497,10 @@ The shuffle open question is resolved as option (a) — see the resolved
 bullet in Open questions below.
 
 Babel's pull was never just the runtime; it was the protocol
-implementations around it. Ship batteries under `/protocols`,
+implementations around it. Ship batteries under `/pkg/protocols`,
 dogfooding every phase above.
 
-### 5.1 `protocols/membership` — the IPC contract
+### 5.1 `pkg/protocols/membership` — the IPC contract
 
 A tiny package of shared wire/IPC types, no implementation:
 
@@ -516,7 +517,7 @@ publishes them. Interchangeability via typed IPC contracts instead
 of Go interfaces — the thing actor frameworks structurally can't
 express.
 
-### 5.2 `protocols/hyparview`
+### 5.2 `pkg/protocols/hyparview`
 
 Full HyParView: join protocol, active/passive views, periodic
 shuffle, priority neighbor promotion on active-view failure.
@@ -524,7 +525,7 @@ Publishes the membership contract. Uses `OnSessionDisconnected` /
 `OnSessionGivenUp` for failure detection (the session layer is the
 monitor — no extra heartbeats).
 
-### 5.3 `protocols/plumtree`
+### 5.3 `pkg/protocols/plumtree`
 
 Plumtree over the membership contract: eager push on tree links,
 lazy push (IHAVE) on the rest, graft/prune tree repair. Public
@@ -666,4 +667,4 @@ what actually shipped rather than left open.
   which is legitimate because that peer is *becoming* an active-view
   member. This needs no session-layer change (transient sessions were the
   alternative), which is why (a) was preferred. See the package doc on
-  `protocols/hyparview` for the mechanism.
+  `pkg/protocols/hyparview` for the mechanism.

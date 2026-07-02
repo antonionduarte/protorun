@@ -16,11 +16,11 @@ Re-run any of this yourself with:
 
 ```bash
 make bench                                   # everything, matches this page
-go test -bench=BenchmarkTCP_RoundTrip -benchmem .   # a single benchmark
+go test -bench=BenchmarkTCP_RoundTrip -benchmem ./pkg/protorun   # a single benchmark
 ```
 
-All benchmark source lives in [`bench_test.go`](../bench_test.go) at
-the module root.
+All benchmark source lives in
+[`bench_test.go`](../pkg/protorun/bench_test.go) in `pkg/protorun`.
 
 ## Methodology
 

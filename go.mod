@@ -4,7 +4,7 @@ go 1.26
 
 toolchain go1.26.4
 
-require github.com/antonionduarte/protorun/config v0.0.0-00010101000000-000000000000
+require github.com/antonionduarte/protorun/pkg/config v0.0.0-00010101000000-000000000000
 
 require (
 	github.com/kr/pretty v0.3.1 // indirect
@@ -18,4 +18,4 @@ require go.uber.org/goleak v1.3.0
 
 // cmd/pingpong (in this module) uses the config nested module; resolve
 // it locally rather than through a published version.
-replace github.com/antonionduarte/protorun/config => ./config
+replace github.com/antonionduarte/protorun/pkg/config => ./pkg/config

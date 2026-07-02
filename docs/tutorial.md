@@ -31,8 +31,8 @@ Every message type embeds `protorun.BaseMessage` and should implement
 package counter
 
 import (
-	"github.com/antonionduarte/protorun"
-	"github.com/antonionduarte/protorun/transport"
+	"github.com/antonionduarte/protorun/pkg/protorun"
+	"github.com/antonionduarte/protorun/pkg/transport"
 )
 
 // Increment asks the receiver to add By to its running total.
@@ -146,8 +146,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/antonionduarte/protorun/prototest"
-	"github.com/antonionduarte/protorun/transport"
+	"github.com/antonionduarte/protorun/pkg/prototest"
+	"github.com/antonionduarte/protorun/pkg/transport"
 
 	"yourmodule/counter"
 )
@@ -192,9 +192,9 @@ settles both runtimes to quiescence, and repeats, up to a 5-second
 *virtual* horizon. The predicate closure reads `protoA`/`protoB`
 fields directly — safe here because `RunUntil` only evaluates it at a
 quiescent point, when no handler is running (see
-[`Sim.RunUntil`](../prototest/sim.go)). A protocol with richer internal
+[`Sim.RunUntil`](../pkg/prototest/sim.go)). A protocol with richer internal
 state usually exposes it through IPC instead (`GetView`-style
-request/reply, as `protocols/hyparview` and `protocols/plumtree` do —
+request/reply, as `pkg/protocols/hyparview` and `pkg/protocols/plumtree` do —
 see [`docs/protocols.md`](protocols.md)); for a two-field tutorial
 protocol, direct reads keep the example honest about what's actually
 happening.

@@ -83,11 +83,11 @@ unit of execution. The differences are what each model optimizes for:
   sends it messages directly; swapping the receiving actor for a
   different implementation means changing who holds that address.
   protorun's layers coordinate through **typed IPC contracts** instead:
-  `protocols/membership` defines `GetView`/`NeighborUp`/`NeighborDown`
+  `pkg/protocols/membership` defines `GetView`/`NeighborUp`/`NeighborDown`
   as plain types with no implementation, and any dissemination
   protocol written against those types runs over *any* membership
-  protocol that answers them — `protocols/plumtree` runs unmodified over
-  `protocols/hyparview` or over `cmd/gossip`'s static contact list,
+  protocol that answers them — `pkg/protocols/plumtree` runs unmodified over
+  `pkg/protocols/hyparview` or over `cmd/gossip`'s static contact list,
   because both publish the same contract (see
   [`docs/protocols.md`](protocols.md)). The interchangeability comes
   from the shared type vocabulary, not from holding a reference to a
@@ -105,7 +105,7 @@ unit of execution. The differences are what each model optimizes for:
   those are what an actor population needs to survive process and
   machine boundaries. protorun ships **distributed protocols** —
   HyParView (partial-view membership) and Plumtree (epidemic broadcast
-  trees) under [`protocols/`](../protocols/) — because a protocol
+  trees) under [`pkg/protocols/`](../pkg/protocols/) — because a protocol
   composition runtime's batteries are algorithms protocols are built
   from, not actor infrastructure. protorun does have supervision
   (`RegisterFactory` + `WithSupervision`, see the README's Supervision

@@ -30,7 +30,7 @@ make deadcode        # golang.org/x/tools/cmd/deadcode, should report nothing
 Run a single test:
 
 ```bash
-go test -race . -run TestIPC_RequestReply_HappyPath
+go test -race ./pkg/protorun -run TestIPC_RequestReply_HappyPath
 ```
 
 The 10k-node scale probe is gated behind an env var because it's slow and
@@ -45,16 +45,17 @@ GOSSIP_SCALE_10K=1 go test -run TestGossip_10000Nodes_Scale -timeout 10m ./cmd/g
 The repo is a Go workspace. The core module (`.`) is deliberately
 **zero-dependency** (stdlib only) — that is a load-bearing property, so
 anything needing a third-party dependency goes in a nested module with
-its own `go.mod`. Today those are `codec/protobuf`
+its own `go.mod`. Today those are `pkg/codec/protobuf`
 (`ProtoCodec[M proto.Message]`, requiring `google.golang.org/protobuf`)
-and `transport/quic` (`quic.NewLayer`, requiring
+and `pkg/transport/quic` (`quic.NewLayer`, requiring
 `github.com/quic-go/quic-go`).
 
 `go.work` at the repo root ties the modules together and is **tracked in
 git** (only `go.work.sum` is ignored): this repo *is* the workspace, so
 a fresh checkout resolves the nested modules against the in-tree core
 without any published version. The nested module's `go.mod` also carries
-a `replace github.com/antonionduarte/protorun => ../..` so it builds
+a `replace github.com/antonionduarte/protorun => ../../..` (depth varies
+by nesting level — `pkg/config` and `pkg/otel` use `../..`) so it builds
 standalone too.
 
 The `Makefile` targets (`build`, `test`, `test-race`, `lint`,
@@ -100,7 +101,7 @@ attribute formats it as `ip:port` automatically.
 ### Tests
 
 - Use `goleak.VerifyTestMain` in `TestMain` so leaked goroutines fail
-  loudly. Existing `main_test.go` (root package) and
+  loudly. Existing `pkg/protorun/main_test.go` and
   `cmd/gossip/main_test.go` are the templates.
 - Run new code under `-race`. The CI workflow already does this on every
   PR.

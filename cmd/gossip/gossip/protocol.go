@@ -5,9 +5,9 @@ import (
 	"slices"
 	"time"
 
-	"github.com/antonionduarte/protorun"
-	"github.com/antonionduarte/protorun/protocols/membership"
-	"github.com/antonionduarte/protorun/transport"
+	"github.com/antonionduarte/protorun/pkg/protocols/membership"
+	"github.com/antonionduarte/protorun/pkg/protorun"
+	"github.com/antonionduarte/protorun/pkg/transport"
 )
 
 // Protocol is the eager-push gossip protocol. Each node broadcasts a

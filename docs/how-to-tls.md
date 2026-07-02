@@ -118,8 +118,8 @@ tune it if a misconfigured peer should stop retrying.
 
 ## QUIC
 
-QUIC mandates TLS, so the `transport/quic` module always encrypts. Pass
+QUIC mandates TLS, so the `pkg/transport/quic` module always encrypts. Pass
 your `*tls.Config` to `quic.NewLayer`; the same role guidance above
 applies. For tests and local development, `quic.DevTLS()` returns a
 throwaway in-memory config (self-signed, not for production). See the
-[`transport/quic`](../transport/quic/) module.
+[`pkg/transport/quic`](../pkg/transport/quic/) module.

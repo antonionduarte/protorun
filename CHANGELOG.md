@@ -385,6 +385,23 @@ on final shapes.
   this call's return value — previously stated in passing, now a
   boxed callout in both places.
 
+### Repo layout: library code moved under `pkg/`
+
+#### Changed
+
+- **All library packages relocated to `pkg/`.** The root `protorun`
+  package, `transport`, `wire`, `prototest`, and `protocols` (with its
+  `membership`/`hyparview`/`plumtree` subpackages) now live under
+  `pkg/`. The four nested modules moved with their parents:
+  `codec/protobuf` → `pkg/codec/protobuf`, `transport/quic` →
+  `pkg/transport/quic`, `config` → `pkg/config`, `otel` → `pkg/otel`,
+  each with its module path and `replace` directive updated to match
+  the new depth. `cmd/`, `docs/`, and `scripts/` stay at the repo
+  root, and the root module path is unchanged
+  (`github.com/antonionduarte/protorun`). Pure directory restructure —
+  no API or behavior changes. Import the core package as
+  `github.com/antonionduarte/protorun/pkg/protorun` going forward.
+
 ## v0.1.0, 2026-05-02
 
 First tagged release. Established the protocol-runtime core, IPC
