@@ -158,11 +158,11 @@ func (p *protoProtocol) strictWatchdog(where string) func() {
 // strict mode is enabled; skipped entirely for OverflowUnbounded, whose
 // capacity() is 0. Rate-limited via a CAS on the last-warn timestamp so
 // a hot producer doesn't flood the log.
-func (p *protoProtocol) strictMailboxOccupancy(depth int) {
+func (p *protoProtocol) strictMailboxOccupancy(mailbox mailbox, depth int) {
 	if p.runtime == nil || !p.runtime.strict {
 		return
 	}
-	capacity := p.mailbox.capacity()
+	capacity := mailbox.capacity()
 	if capacity <= 0 || depth*100 < capacity*80 {
 		return
 	}
@@ -178,7 +178,7 @@ func (p *protoProtocol) strictMailboxOccupancy(depth int) {
 		"protocol", p.name,
 		"depth", depth,
 		"capacity", capacity,
-		"policy", p.mailbox.policy().String())
+		"policy", mailbox.policy().String())
 }
 
 // strictReplyWithoutHandler is invoked by deliverReply when an inbound

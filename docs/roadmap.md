@@ -153,7 +153,30 @@ test.
 
 ---
 
-## Phase 1 — supervision and restart (v0.3.0)
+## Phase 1 — supervision and restart (v0.3.0) — done
+
+Delivered: `RegisterFactory` + `WithSupervision(Supervision{...})`
+with a `Directive` (`Resume`/`Restart`/`Stop`/`Escalate`), sliding-
+window restart budget (`MaxRestarts`/`Window`), `ExpBackoff` (exported
+`BackoffFunc`), and `OnGiveUp` (`Stop`/`Escalate`). A per-protocol
+supervisor goroutine executes the numbered restart contract off the
+event loop: quarantine (enqueue dead-letters, never blocks) + old-
+mailbox drain, timer cancellation, pending-request auto-fail with
+`ErrProtocolRestarting`, owner-indexed deregistration of codecs/routes/
+subscriptions, clock-driven cancellable backoff, fresh-instance
+rebuild (Start → Init), established-peer session replay, and an
+optional `RestartHandler.OnRestart`. `Escalate` records a fatal error
+and `Run`/`Shutdown` surface `ErrProtocolFailed`. Observability:
+`protorun.protocol.restart` counter (outcome attr) and a runtime-
+published `ProtocolFailed` notification (restarted/stopped/escalated).
+Design record below.
+
+Deviations from the sketch below: the observability notification is a
+single `ProtocolFailed` type with an `Outcome` field (resolving the
+open question) rather than `ProtocolRestarted`; the restart counter's
+second attribute is `outcome`, not `where`. `Restart` on a singleton
+`Register` panics in strict mode / warn-downgrades to `Resume`
+otherwise.
 
 The loudest gap versus every actor framework. Today a panicking
 handler is recovered and logged, but the protocol keeps running with
@@ -454,9 +477,6 @@ QUIC needs the Address migration.
 
 - Phase 0: does `Unbounded` mailbox justify existing at launch, or
   is it an attractive nuisance? (Lean: ship it, strict-mode warn.)
-- Phase 1: should `ProtocolRestarted` notifications also fire for
-  `Stop`/`Escalate` outcomes? (Lean: yes, one `ProtocolFailed` type
-  with an outcome field.)
 - Phase 4: expose the Sim step hook as a full event-trace recorder
   (for visualization) or keep it minimal? (Lean: minimal at launch.)
 - Phase 5: HyParView shuffle over TCP sessions opens short-lived

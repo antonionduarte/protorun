@@ -14,7 +14,7 @@ import (
 func recvEvent(proto *protoProtocol, timeout time.Duration) (protoEvent, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	return proto.mailbox.next(ctx)
+	return proto.currentMailbox().next(ctx)
 }
 
 // registerMockStack wires rt with the standard in-package fixture: a

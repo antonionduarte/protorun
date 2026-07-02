@@ -60,8 +60,28 @@ type Runtime struct {
 	// goroutine.
 	deadLetter func(DeadLetter)
 
-	protocols []*protoProtocol
-	codecs    *codecRegistry
+	// protocols is the live protocol set. Written at registration (before
+	// start) and, once supervision can remove a Stopped/Escalated
+	// protocol at run time, mutated by supervisor goroutines — so it is
+	// guarded by protocolsMu and read through snapshotProtocols.
+	protocols   []*protoProtocol
+	protocolsMu sync.Mutex
+
+	codecs *codecRegistry
+
+	// established is the set of peers with a live session, updated from
+	// session-event handling (SessionConnected adds, SessionDisconnected
+	// removes). A restart replays a synthetic SessionConnected for each,
+	// so the fresh instance rebuilds peer state the way it did at boot.
+	established   map[transport.Host]struct{}
+	establishedMu sync.Mutex
+
+	// fatalErr is set (once) by a supervisor that escalates; Run and
+	// Shutdown surface it. shutdownOnce guards teardown so Cancel is
+	// idempotent and safe to call from several paths.
+	fatalErr     error
+	fatalMu      sync.Mutex
+	shutdownOnce sync.Once
 
 	retryPolicy       RetryPolicy
 	retryMu           sync.Mutex
@@ -144,6 +164,7 @@ func New(self transport.Host, opts ...Option) *Runtime {
 		clock:             realClock{},
 		codecs:            newCodecRegistry(),
 		connectionRetries: make(map[transport.Host]*retryState),
+		established:       make(map[transport.Host]struct{}),
 		ipc:               newIPCRouter(),
 		logger:            slog.Default().With("component", "runtime"),
 		metrics:           noopMetrics{},
@@ -186,11 +207,28 @@ func (r *Runtime) start() error {
 
 	r.startProtocols(r.ctx)
 	r.initProtocols()
+	// Supervisors start after boot so any Start/Init panic during boot
+	// is already buffered on their signal channel and handled the moment
+	// they come up — without racing the boot sequence itself.
+	r.startSupervisors(r.ctx)
 	r.startSessionEvents(r.ctx)
 
 	r.wg.Add(1)
 	go r.eventHandler(r.ctx)
 	return nil
+}
+
+// startSupervisors launches one goroutine per supervised protocol.
+// Each parks on its signal channel until a panic is reported (a boot
+// panic may already be buffered) and then applies the directive.
+func (r *Runtime) startSupervisors(ctx context.Context) {
+	for _, p := range r.protocols {
+		if p.supervisor == nil {
+			continue
+		}
+		sup := p.supervisor
+		r.wg.Go(func() { sup.run(ctx) })
+	}
 }
 
 // registerNetworkLayer attaches a Layer. Most users wire this
@@ -214,7 +252,9 @@ type RegisterOption func(*registerConfig)
 // zero value is not valid; Register seeds the defaults before applying
 // options.
 type registerConfig struct {
-	mailbox Mailbox
+	mailbox        Mailbox
+	supervision    Supervision
+	hasSupervision bool
 }
 
 // WithMailbox overrides the registering protocol's mailbox capacity and
@@ -224,23 +264,149 @@ func WithMailbox(m Mailbox) RegisterOption {
 	return func(c *registerConfig) { c.mailbox = m }
 }
 
-// Register wraps the user's Protocol in a protoProtocol envelope and
-// attaches it to this runtime. Without options the protocol gets a
-// default mailbox (capacity defaultMailboxCapacity, OverflowBlock);
-// WithMailbox tunes it.
+// Register wraps a single Protocol instance in a protoProtocol envelope
+// and attaches it to this runtime. Without options the protocol gets a
+// default mailbox (capacity defaultMailboxCapacity, OverflowBlock) and
+// Resume supervision (panics are recovered and logged, the instance
+// keeps running); WithMailbox and WithSupervision tune those.
+//
+// Restart supervision needs a fresh instance per restart, which a
+// singleton can't provide — use RegisterFactory for that. Configuring
+// OnPanic: Restart here panics in strict mode and downgrades to Resume
+// (with a warning) otherwise.
 func (r *Runtime) Register(impl Protocol, opts ...RegisterOption) {
+	r.buildProtocol(impl, nil, opts)
+}
+
+// RegisterFactory attaches a protocol built from a factory. The factory
+// is invoked once immediately for the initial instance and again for
+// each restart, so every incarnation starts from fresh state — the
+// property Restart supervision depends on.
+func (r *Runtime) RegisterFactory(factory func() Protocol, opts ...RegisterOption) {
+	r.buildProtocol(factory(), factory, opts)
+}
+
+// buildProtocol is the shared registration path for Register and
+// RegisterFactory. It seeds mailbox and supervision defaults, enforces
+// that Restart has a factory, wires a supervisor when the policy is not
+// Resume, and appends the envelope.
+func (r *Runtime) buildProtocol(impl Protocol, factory func() Protocol, opts []RegisterOption) {
 	cfg := registerConfig{mailbox: Mailbox{Capacity: defaultMailboxCapacity, Overflow: OverflowBlock}}
 	for _, opt := range opts {
 		opt(&cfg)
 	}
-	r.registerProtocol(newProtoProtocolMailbox(impl, cfg.mailbox))
+
+	p := newProtoProtocolMailbox(impl, cfg.mailbox)
+	p.factory = factory
+
+	spec := cfg.supervision
+	if spec.OnPanic == Restart && factory == nil {
+		// Restart with no factory would re-run a corrupted singleton —
+		// the exact Erlang mistake supervision exists to avoid.
+		if r.strict {
+			strictPanic("WithSupervision{OnPanic: Restart} requires RegisterFactory; %T registered as a singleton", impl)
+		}
+		r.Logger().Warn("protorun: Restart supervision requires RegisterFactory; downgrading to Resume",
+			"protocol", fmt.Sprintf("%T", impl))
+		spec.OnPanic = Resume
+	}
+	if cfg.hasSupervision && spec.OnPanic != Resume {
+		p.supervisor = newSupervisor(p, r, spec.withDefaults())
+	}
+
+	r.registerProtocol(p)
 }
 
 // registerProtocol attaches an already-constructed protoProtocol to this
 // runtime. Reserved for tests that want to inspect the envelope.
 func (r *Runtime) registerProtocol(protocol *protoProtocol) {
 	protocol.bindRuntime(r)
+	r.protocolsMu.Lock()
 	r.protocols = append(r.protocols, protocol)
+	r.protocolsMu.Unlock()
+}
+
+// snapshotProtocols copies the live protocol set under lock so callers
+// can iterate without holding protocolsMu (fanout enqueues can block on
+// a slow consumer, and a supervisor may remove a protocol concurrently).
+func (r *Runtime) snapshotProtocols() []*protoProtocol {
+	r.protocolsMu.Lock()
+	out := make([]*protoProtocol, len(r.protocols))
+	copy(out, r.protocols)
+	r.protocolsMu.Unlock()
+	return out
+}
+
+// removeProtocol drops p from the live set. Called by a supervisor when
+// a protocol is Stopped or Escalated; its codecs and IPC routes are
+// already deregistered, so removal makes it invisible to session
+// fanout too.
+func (r *Runtime) removeProtocol(p *protoProtocol) {
+	r.protocolsMu.Lock()
+	for i, x := range r.protocols {
+		if x == p {
+			r.protocols = append(r.protocols[:i], r.protocols[i+1:]...)
+			break
+		}
+	}
+	r.protocolsMu.Unlock()
+}
+
+// publishProtocolFailed fans a ProtocolFailed notification out to any
+// subscriber. Notifications are local-only and codec-free, so this is a
+// plain publish through the IPC fanout.
+func (r *Runtime) publishProtocolFailed(protocol, outcome string, attempt int) {
+	r.publishNotification(WireID[ProtocolFailed](), ProtocolFailed{
+		Protocol: protocol,
+		Outcome:  outcome,
+		Attempt:  attempt,
+	})
+}
+
+// escalate records the fatal error (first writer wins) and cancels the
+// runtime context so Run unblocks and returns ErrProtocolFailed. It
+// only cancels the context — full teardown (layer Cancel, WaitGroup
+// wait) is left to Cancel, because escalate runs on a supervisor
+// goroutine that Cancel's WaitGroup wait would otherwise deadlock on.
+func (r *Runtime) escalate(protocol, desc string) {
+	r.fatalMu.Lock()
+	if r.fatalErr == nil {
+		r.fatalErr = fmt.Errorf("%w: protocol %s: %s", ErrProtocolFailed, protocol, desc)
+	}
+	r.fatalMu.Unlock()
+	r.cancelFunc()
+}
+
+// fatalError returns the escalation error, if any.
+func (r *Runtime) fatalError() error {
+	r.fatalMu.Lock()
+	defer r.fatalMu.Unlock()
+	return r.fatalErr
+}
+
+// markEstablished / markDisconnected maintain the established-peers set
+// consulted by session replay on restart.
+func (r *Runtime) markEstablished(host transport.Host) {
+	r.establishedMu.Lock()
+	r.established[host] = struct{}{}
+	r.establishedMu.Unlock()
+}
+
+func (r *Runtime) markDisconnected(host transport.Host) {
+	r.establishedMu.Lock()
+	delete(r.established, host)
+	r.establishedMu.Unlock()
+}
+
+// snapshotEstablished copies the established-peers set under lock.
+func (r *Runtime) snapshotEstablished() []transport.Host {
+	r.establishedMu.Lock()
+	out := make([]transport.Host, 0, len(r.established))
+	for h := range r.established {
+		out = append(out, h)
+	}
+	r.establishedMu.Unlock()
+	return out
 }
 
 // connect / disconnect are the runtime-internal entry points used by
@@ -377,15 +543,28 @@ func (r *Runtime) emitDeadLetter(dl DeadLetter) {
 	}
 }
 
+// Cancel tears the runtime down and blocks until every goroutine it
+// owns has exited. It is idempotent (guarded by shutdownOnce) so the
+// several paths that may reach it — a user call, the SIGINT handler in
+// Run, and Run's own post-cancellation cleanup — never double-tear-down.
+//
+// Do not call Cancel from inside a protocol handler or a supervisor
+// callback: it waits on the WaitGroup those goroutines belong to. An
+// escalating supervisor uses escalate (context-only cancel) instead;
+// Run performs the WaitGroup wait once it unblocks.
 func (r *Runtime) Cancel() {
-	// Cancel tears down the runtime in the following order:
-	//   1. Mark every protocol cancelled (strict-mode phase tracking)
-	//      and cancel every timer it owns.
-	//   2. Cancel the runtime context (used by all internal goroutines).
-	//   3. Stop session and transport layers.
-	//   4. Tear down the retry table.
-	//   5. Wait for all goroutines to finish via the WaitGroup.
-	for _, p := range r.protocols {
+	r.shutdownOnce.Do(r.teardown)
+}
+
+// teardown is the one-time body behind Cancel:
+//  1. Mark every protocol cancelled (strict-mode phase tracking)
+//     and cancel every timer it owns.
+//  2. Cancel the runtime context (used by all internal goroutines).
+//  3. Stop session and transport layers.
+//  4. Tear down the retry table.
+//  5. Wait for all goroutines to finish via the WaitGroup.
+func (r *Runtime) teardown() {
+	for _, p := range r.snapshotProtocols() {
 		p.setPhase(phaseCancelled)
 		p.cancelAllTimers()
 	}
@@ -456,10 +635,12 @@ func (r *Runtime) dispatchSessionEvent(ctx context.Context, ev transport.Session
 	switch e := ev.(type) {
 	case *transport.SessionConnected:
 		r.metrics.Counter("protorun.session.connected", 1, Attr{Key: "host", Value: e.Host().String()})
+		r.markEstablished(e.Host())
 		r.onSessionUpForRetry(e.Host())
 		return r.fanoutSessionEvent(ctx, sessionEvent{kind: sessionConnectedEvent, host: e.Host()})
 	case *transport.SessionDisconnected:
 		r.metrics.Counter("protorun.session.disconnected", 1, Attr{Key: "host", Value: e.Host().String()})
+		r.markDisconnected(e.Host())
 		giveUp, attempts := r.onSessionDownForRetry(e.Host())
 		if giveUp {
 			r.metrics.Counter("protorun.session.given_up", 1,
@@ -530,7 +711,7 @@ func (r *Runtime) dispatchSessionEvent(ctx context.Context, ev transport.Session
 // channel, ctx-guarded so a slow consumer or shutdown doesn't block the
 // caller. Returns false on ctx cancellation.
 func (r *Runtime) fanoutSessionEvent(ctx context.Context, ev sessionEvent) bool {
-	for _, proto := range r.protocols {
+	for _, proto := range r.snapshotProtocols() {
 		if !proto.enqueue(ctx, protoEvent{kind: evSession, aux: &eventAux{session: ev}}) {
 			return false
 		}
@@ -654,5 +835,10 @@ func (r *Runtime) Run() error {
 	}()
 
 	<-r.ctx.Done()
-	return nil
+	// The context can fire from a user Cancel, a signal, or a supervisor
+	// escalation (which cancels the context but leaves full teardown to
+	// us, to avoid deadlocking on its own goroutine). Run the teardown
+	// here — idempotent via shutdownOnce — then surface any fatal error.
+	r.Cancel()
+	return r.fatalError()
 }

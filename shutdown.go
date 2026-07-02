@@ -38,6 +38,12 @@ func (r *Runtime) Shutdown(timeout time.Duration) error {
 
 	select {
 	case <-done:
+		// If a supervisor escalated, surface that as the shutdown cause
+		// rather than a clean nil — teardown completed, but the runtime
+		// died because a protocol failed terminally.
+		if ferr := r.fatalError(); ferr != nil {
+			return ferr
+		}
 		return nil
 	case <-time.After(timeout):
 		return ErrShutdownTimeout

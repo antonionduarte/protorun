@@ -6,9 +6,6 @@ Everything below v1.0 may break API and wire format.
 
 ## Pending (see docs/roadmap.md for designs)
 
-- [ ] Phase 1 (v0.3.0): supervision — factory registration, panic
-      directives (Resume/Restart/Stop/Escalate), restart with
-      session replay, restart budget + backoff.
 - [ ] Phase 2 (v0.4.0): `WireCodec[M]` reflective codec for
       variable-length messages, `Handle` one-line registration,
       `codec/protobuf` nested module, `JSONCodec`.
@@ -28,6 +25,15 @@ Everything below v1.0 may break API and wire format.
 
 ## Done
 
+- [x] Phase 1 (v0.3.0): supervision — `RegisterFactory` +
+      `WithSupervision`, panic directives
+      (Resume/Restart/Stop/Escalate), per-protocol supervisor with
+      quarantine + mailbox drain, pending-request auto-fail
+      (`ErrProtocolRestarting`), owner-indexed deregistration,
+      cancellable `ExpBackoff`, session replay, `RestartHandler`,
+      restart budget → `OnGiveUp`, `ProtocolFailed` notification +
+      `protorun.protocol.restart` metric, `ErrProtocolFailed` from
+      `Run`/`Shutdown` on escalate.
 - [x] Phase 0 (v0.2.0): module rename to `protorun`, unified
       per-protocol mailbox with overflow policy + dead-letter hook,
       handle-based timer API (`ctx.After`/`ctx.Every`), `Clock` seam

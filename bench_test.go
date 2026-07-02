@@ -86,7 +86,7 @@ func BenchmarkProcessMessage(b *testing.B) {
 	var drained sync.WaitGroup
 	drained.Go(func() {
 		for {
-			if _, ok := proto.mailbox.next(drainCtx); !ok {
+			if _, ok := proto.currentMailbox().next(drainCtx); !ok {
 				return
 			}
 		}

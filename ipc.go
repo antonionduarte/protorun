@@ -217,9 +217,14 @@ func RegisterRequestHandler[Req Request, Rep Reply](
 				// "if the requester saw ErrHandlerPanicked, then
 				// OnPanic has already been called", which is the
 				// natural assumption a supervisor / metrics hook
-				// will make.
+				// will make. The supervisor hand-off comes last:
+				// recovering here (before safeCall can) must not hide
+				// the panic from a non-Resume directive, or a
+				// supervised protocol would keep running with
+				// half-mutated state after a request-handler panic.
 				ctx.binding().reportPanic("request handler", rec, debug.Stack())
 				r.Fail(fmt.Errorf("%w: %v", ErrHandlerPanicked, rec))
+				ctx.binding().handPanicToSupervisor("request handler", rec)
 			}
 		}()
 		fn(typed, r)

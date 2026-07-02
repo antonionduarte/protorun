@@ -106,6 +106,11 @@ const (
 	evRequest
 	evReply
 	evNotification
+	// evCallback carries a runtime-internal lifecycle callback (today,
+	// RestartHandler.OnRestart) so it runs on the owning protocol's
+	// event loop like every other handler. Kept last so the existing
+	// kinds keep their values.
+	evCallback
 )
 
 func (k protoEventKind) String() string {
@@ -122,6 +127,8 @@ func (k protoEventKind) String() string {
 		return "reply"
 	case evNotification:
 		return "notification"
+	case evCallback:
+		return "callback"
 	}
 	return "unknown"
 }
@@ -144,7 +151,7 @@ type protoEvent struct {
 	msg   Message        // evMessage
 	from  transport.Host // evMessage
 	timer *timerHandle   // evTimer
-	aux   *eventAux      // evSession, evRequest, evReply, evNotification
+	aux   *eventAux      // evSession, evRequest, evReply, evNotification, evCallback
 }
 
 // eventAux holds the payload for the non-hot event kinds. Exactly one
@@ -154,6 +161,7 @@ type eventAux struct {
 	request inboundRequest
 	reply   inboundReply
 	notif   inboundNotification
+	run     func() // evCallback
 }
 
 // peer returns the Host this event concerns, or the zero Host when the
@@ -184,6 +192,13 @@ type mailbox interface {
 	// next blocks until an event is available or ctx is done. ok=false
 	// means ctx fired and the loop should exit.
 	next(ctx context.Context) (ev protoEvent, ok bool)
+
+	// drain removes and returns every currently-queued event without
+	// blocking. Used by the supervisor to empty a quarantined mailbox
+	// into the dead-letter hook before a restart. The caller must
+	// guarantee no event loop is concurrently draining (the loop has
+	// already exited by the time the supervisor calls this).
+	drain() []protoEvent
 
 	// depth is the current occupancy, sampled for metrics on enqueue.
 	depth() int
@@ -236,6 +251,18 @@ func (b *blockingMailbox) next(ctx context.Context) (protoEvent, bool) {
 		return ev, true
 	case <-ctx.Done():
 		return protoEvent{}, false
+	}
+}
+
+func (b *blockingMailbox) drain() []protoEvent {
+	var out []protoEvent
+	for {
+		select {
+		case ev := <-b.ch:
+			out = append(out, ev)
+		default:
+			return out
+		}
 	}
 }
 
@@ -319,6 +346,14 @@ func (d *dequeMailbox) next(ctx context.Context) (protoEvent, bool) {
 			return protoEvent{}, false
 		}
 	}
+}
+
+func (d *dequeMailbox) drain() []protoEvent {
+	d.mu.Lock()
+	out := d.queue
+	d.queue = nil
+	d.mu.Unlock()
+	return out
 }
 
 func (d *dequeMailbox) depth() int {

@@ -15,6 +15,28 @@ first-class testing package for protocol authors.
 
 ### Added
 
+- **Supervision and restart.** `RegisterFactory(func() Protocol, ...)`
+  plus `WithSupervision(Supervision{OnPanic, MaxRestarts, Window,
+  Backoff, OnGiveUp})` give a panicking protocol a real recovery
+  policy instead of only `Resume`. `Directive` is `Resume` (default,
+  today's behavior) / `Restart` / `Stop` / `Escalate`. A per-protocol
+  supervisor goroutine runs the restart contract off the event loop:
+  quarantine the mailbox (further events dead-letter, never block) and
+  drain it, cancel timers, auto-fail pending `SendRequest`s with
+  `ErrProtocolRestarting`, deregister the instance's codecs / request
+  routes / notification subscriptions, wait a cancellable
+  `ExpBackoff(base, max)` (exported `BackoffFunc`), build a fresh
+  instance from the factory (Start → Init), replay a synthetic
+  `SessionConnected` for every established peer, and invoke the
+  optional `RestartHandler.OnRestart(attempt)`. More than
+  `MaxRestarts` panics within `Window` triggers `OnGiveUp` (`Stop`
+  removes the protocol; `Escalate` cancels the runtime and makes
+  `Run`/`Shutdown` return an `ErrProtocolFailed`-wrapped error).
+  `Restart` requires a factory: a strict-mode registration panic, or a
+  warn-and-downgrade-to-`Resume` otherwise. Observability:
+  `protorun.protocol.restart` counter (`outcome` attr) and a runtime-
+  published `ProtocolFailed{Protocol, Outcome, Attempt}` notification
+  siblings can `SubscribeNotification` to.
 - **Unified per-protocol mailbox with overflow policy.** The six
   per-protocol channels (messages, timers, session events, requests,
   replies, notifications) collapse into one ordered mailbox carrying a

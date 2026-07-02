@@ -215,6 +215,33 @@ event loop via IPC; a self-targeted `SendRequest` is the idiomatic pattern.
 The gossip example does this: `gossip.TriggerBroadcast` is the public way
 to ask the gossip protocol to broadcast.
 
+### Supervision
+
+By default a panicking handler is recovered, logged, and the protocol
+keeps running (`Resume`). For state that can't survive a half-mutation,
+register a factory and a supervision policy so the runtime rebuilds the
+protocol from scratch instead:
+
+```go
+rt.RegisterFactory(newGossip, protorun.WithSupervision(protorun.Supervision{
+    OnPanic:  protorun.Restart, // Resume | Restart | Stop | Escalate
+    Backoff:  protorun.ExpBackoff(100*time.Millisecond, 5*time.Second),
+    OnGiveUp: protorun.Escalate, // when MaxRestarts within Window is exceeded
+}))
+```
+
+On `Restart` the supervisor quarantines the mailbox (further events
+dead-letter, producers never block), cancels the protocol's timers,
+fails its pending `SendRequest`s with `ErrProtocolRestarting`,
+deregisters its codecs and IPC routes, waits out the backoff, then
+builds a fresh instance (`Start` → `Init`) and replays a synthetic
+`SessionConnected` for every established peer so it rebuilds peer state
+the way it did at boot. Sessions stay up across the restart. Implement
+`RestartHandler.OnRestart(attempt)` to observe it. `Stop` removes the
+protocol; `Escalate` cancels the runtime and `Run` returns an
+`ErrProtocolFailed`-wrapped error. Every outcome publishes a
+`ProtocolFailed` notification siblings can subscribe to.
+
 ## Documentation
 
 - Full API reference: `go doc github.com/antonionduarte/protorun`

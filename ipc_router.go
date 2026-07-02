@@ -77,6 +77,31 @@ func (r *ipcRouter) Unsubscribe(wireID uint64, proto *protoProtocol) {
 	}
 }
 
+// RemoveOwner deletes every routing-table entry owned by proto: its
+// request-handler routes and all of its notification subscriptions.
+// Called by the supervisor during restart/stop so the old instance
+// stops receiving requests and notifications before the fresh
+// instance re-registers. Both maps are scanned rather than
+// reverse-indexed: registration/removal are cold paths.
+func (r *ipcRouter) RemoveOwner(proto *protoProtocol) {
+	r.requestMu.Lock()
+	for id, route := range r.requestRoutes {
+		if route.proto == proto {
+			delete(r.requestRoutes, id)
+		}
+	}
+	r.requestMu.Unlock()
+
+	r.notificationMu.Lock()
+	for id, subs := range r.notificationFanout {
+		delete(subs, proto)
+		if len(subs) == 0 {
+			delete(r.notificationFanout, id)
+		}
+	}
+	r.notificationMu.Unlock()
+}
+
 // SnapshotSubscribers returns the (proto, handler) pairs subscribed
 // to wireID. Snapshotted under lock so the caller can fan out without
 // holding the mutex (channel sends can block on slow consumers).

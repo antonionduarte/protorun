@@ -114,8 +114,45 @@ type (
 
 		// mailbox is the single ordered event queue that replaced the
 		// former six per-kind channels. Arrival order is delivery order
-		// across message / timer / session / IPC events.
-		mailbox mailbox
+		// across message / timer / session / IPC events. Held behind an
+		// atomic pointer because a restart swaps in a fresh mailbox while
+		// external producers may still be reading the current one on the
+		// enqueue path; the atomic makes that swap race-free. Read via
+		// currentMailbox, written via setMailbox.
+		mailbox atomic.Pointer[mailboxCell]
+
+		// mailboxCfg is the Mailbox config the mailbox was built from,
+		// retained so a restart can build the fresh instance a fresh
+		// mailbox with the same capacity and overflow policy.
+		mailboxCfg Mailbox
+
+		// factory builds a fresh instance on restart; nil for a
+		// singleton Register. Restart requires a non-nil factory (see
+		// buildProtocol).
+		factory func() Protocol
+
+		// supervisor drives non-Resume panic directives off the event
+		// loop; nil when OnPanic is Resume (the default), so unsupervised
+		// protocols pay nothing on the enqueue and panic paths.
+		supervisor *supervisor
+
+		// quarantined, when set by the supervisor during a restart,
+		// makes enqueue drop every event to dead-letter (non-blocking,
+		// kind preserved) so no producer stalls on a protocol whose loop
+		// is being torn down and rebuilt.
+		quarantined atomic.Bool
+
+		// exitLoop, set by safeCall after a non-Resume panic, tells the
+		// event loop to return after the current dispatch so the
+		// supervisor can rebuild on a clean slate.
+		exitLoop atomic.Bool
+
+		// loopCancel / loopDone track the current event-loop incarnation
+		// so the supervisor can stop the old loop and wait for it to
+		// exit before swapping in a fresh mailbox and instance. Touched
+		// only by boot and by the (single) supervisor goroutine.
+		loopCancel func()
+		loopDone   chan struct{}
 
 		// lastMailboxWarn is the unix-nano timestamp of the last
 		// strict-mode high-occupancy warning, used to rate-limit it to
@@ -167,15 +204,30 @@ func newProtoProtocol(protocol Protocol, capacity int) *protoProtocol {
 // newProtoProtocolMailbox wraps a user Protocol in a protoProtocol
 // envelope backed by a mailbox built from m.
 func newProtoProtocolMailbox(protocol Protocol, m Mailbox) *protoProtocol {
-	return &protoProtocol{
-		protocol: protocol,
-		name:     fmt.Sprintf("%T", protocol),
-		mailbox:  newMailbox(m),
-		handlers: make(map[uint64]func(Message, transport.Host)),
-		timers:   make(map[uint64]*timerHandle),
-		pending:  make(map[uint64]pendingRequest),
+	p := &protoProtocol{
+		protocol:   protocol,
+		name:       fmt.Sprintf("%T", protocol),
+		mailboxCfg: m,
+		handlers:   make(map[uint64]func(Message, transport.Host)),
+		timers:     make(map[uint64]*timerHandle),
+		pending:    make(map[uint64]pendingRequest),
 	}
+	p.setMailbox(newMailbox(m))
+	return p
 }
+
+// mailboxCell boxes a mailbox interface value so it can live behind an
+// atomic.Pointer (an interface can't be swapped atomically directly).
+type mailboxCell struct{ mb mailbox }
+
+// currentMailbox returns the protocol's live mailbox. Loaded once per
+// event-loop incarnation and once per enqueue so a restart's mailbox
+// swap is observed atomically.
+func (p *protoProtocol) currentMailbox() mailbox { return p.mailbox.Load().mb }
+
+// setMailbox installs mb as the live mailbox. Called at construction
+// and on restart (with a fresh mailbox of the same config).
+func (p *protoProtocol) setMailbox(mb mailbox) { p.mailbox.Store(&mailboxCell{mb: mb}) }
 
 // bindRuntime is called by Runtime.registerProtocol so the protocol can
 // resolve its hosting runtime when ensureContext fires.
@@ -183,22 +235,61 @@ func (p *protoProtocol) bindRuntime(r *Runtime) { p.runtime = r }
 
 func (p *protoProtocol) Start(ctx context.Context, wg *sync.WaitGroup) {
 	p.ensureContext()
-	p.setPhase(phaseRegistering)
-	// wg.Add happens AFTER protocol.Start returns. If user's Start
-	// panics (e.g. a strict-mode invariant fires), no eventHandler
-	// goroutine is created, so the WG counter must not have been
-	// incremented; otherwise Cancel's wg.Wait() would block forever.
-	p.protocol.Start(p.ctx)
-	p.setPhase(phaseRegistered)
-	wg.Add(1)
-	go p.eventHandler(ctx, wg)
+	if p.supervisor == nil {
+		p.setPhase(phaseRegistering)
+		// wg.Add happens AFTER protocol.Start returns. If user's Start
+		// panics (e.g. a strict-mode invariant fires), no eventHandler
+		// goroutine is created, so the WG counter must not have been
+		// incremented; otherwise Cancel's wg.Wait() would block forever.
+		p.protocol.Start(p.ctx)
+		p.setPhase(phaseRegistered)
+		p.startLoop(ctx, wg)
+		return
+	}
+	// Supervised: a Start panic is not fatal — recover it, quarantine
+	// the protocol, and hand it to the supervisor (which starts after
+	// boot) to rebuild. The loop is not started; the fresh instance
+	// gets its own.
+	if rec, panicked := p.callStart(); panicked {
+		p.quarantined.Store(true)
+		p.supervisor.signalPanic("Start", rec)
+		return
+	}
+	p.startLoop(ctx, wg)
 }
 
 func (p *protoProtocol) Init() {
 	p.ensureContext()
-	p.setPhase(phaseInitializing)
-	p.protocol.Init(p.ctx)
-	p.setPhase(phaseRunning)
+	if p.supervisor == nil {
+		p.setPhase(phaseInitializing)
+		p.protocol.Init(p.ctx)
+		p.setPhase(phaseRunning)
+		return
+	}
+	if p.quarantined.Load() {
+		// Boot Start already failed for this protocol; the supervisor
+		// will rebuild it. Nothing to initialize.
+		return
+	}
+	if rec, panicked := p.callInit(); panicked {
+		p.quarantined.Store(true)
+		p.exitLoop.Store(true)
+		p.supervisor.signalPanic("Init", rec)
+	}
+}
+
+// startLoop launches an event-loop incarnation for p and records its
+// cancel func and done channel so the supervisor can stop it on a
+// restart. The loop context is a child of parent (the runtime context)
+// so runtime shutdown still stops every loop; the per-incarnation
+// cancel lets the supervisor stop just this one.
+func (p *protoProtocol) startLoop(parent context.Context, wg *sync.WaitGroup) {
+	loopCtx, cancel := context.WithCancel(parent)
+	done := make(chan struct{})
+	p.loopCancel = cancel
+	p.loopDone = done
+	wg.Add(1)
+	go p.eventHandler(loopCtx, wg, done)
 }
 
 // ensureContext lazily initializes the ProtocolContext. The protocol must
@@ -342,14 +433,28 @@ func (c *protocolContext) reportPanic(where string, rec any, stack []byte) {
 	c.proto.reportPanic(where, rec, stack)
 }
 
-func (p *protoProtocol) eventHandler(ctx context.Context, wg *sync.WaitGroup) {
+func (c *protocolContext) handPanicToSupervisor(where string, rec any) {
+	c.proto.handPanicToSupervisor(where, rec)
+}
+
+func (p *protoProtocol) eventHandler(ctx context.Context, wg *sync.WaitGroup, done chan struct{}) {
+	defer close(done)
 	defer wg.Done()
+	// Bind the mailbox for this incarnation once. A restart starts a new
+	// loop against the fresh mailbox; this loop keeps draining the one it
+	// was born with until it exits.
+	mailbox := p.currentMailbox()
 	for {
-		ev, ok := p.mailbox.next(ctx)
+		ev, ok := mailbox.next(ctx)
 		if !ok {
 			return
 		}
 		p.dispatch(ev)
+		// A non-Resume panic during dispatch asks the loop to exit so
+		// the supervisor can rebuild on a fresh mailbox and instance.
+		if p.exitLoop.Load() {
+			return
+		}
 	}
 }
 
@@ -368,6 +473,18 @@ func (p *protoProtocol) dispatch(ev protoEvent) {
 			return
 		}
 		p.safeCall("timer handler", ev.timer.fn)
+	default:
+		// Session and IPC events all carry their payload behind aux;
+		// they share a helper so the hot inline kinds above stay cheap.
+		p.dispatchAux(ev)
+	}
+}
+
+// dispatchAux handles the aux-carrying event kinds (session, IPC, and
+// the internal lifecycle callback). Split out of dispatch so the
+// hot-path message/timer branches stay simple.
+func (p *protoProtocol) dispatchAux(ev protoEvent) {
+	switch ev.kind {
 	case evSession:
 		p.safeCall("session event handler", func() { p.deliverSessionEvent(ev.aux.session) })
 	case evRequest:
@@ -382,6 +499,13 @@ func (p *protoProtocol) dispatch(ev protoEvent) {
 	case evNotification:
 		notif := ev.aux.notif
 		p.safeCall("notification handler", func() { notif.handler(notif.n) })
+	case evCallback:
+		// Runtime-internal lifecycle callback (RestartHandler.OnRestart),
+		// run on the loop like any handler so it observes protocol state
+		// without locking.
+		if ev.aux != nil && ev.aux.run != nil {
+			p.safeCall("restart handler", ev.aux.run)
+		}
 	}
 }
 
@@ -401,25 +525,36 @@ func (p *protoProtocol) handleMessage(msg Message, from transport.Host) {
 // early. Called from every producer: the dispatcher, IPC delivery,
 // notification fanout, and timer fires.
 func (p *protoProtocol) enqueue(ctx context.Context, ev protoEvent) bool {
-	dropped, didDrop, ok := p.mailbox.push(ctx, ev)
+	// A quarantined protocol is mid-restart: its loop is gone and its
+	// mailbox is being replaced. Drop every event to dead-letter
+	// (non-blocking, even for OverflowBlock) and report success so no
+	// producer ever stalls on it. The quarantined flag is only ever set
+	// on supervised protocols, so unsupervised ones skip the atomic
+	// load entirely.
+	if p.supervisor != nil && p.quarantined.Load() {
+		p.deadLetterEvent(ev)
+		return true
+	}
+	mailbox := p.currentMailbox()
+	dropped, didDrop, ok := mailbox.push(ctx, ev)
 	if !ok {
 		return false
 	}
-	depth := p.mailbox.depth()
+	depth := mailbox.depth()
 	p.runtime.metrics.Histogram("protorun.mailbox.depth", float64(depth),
 		Attr{Key: "protocol", Value: p.name})
 	if didDrop {
 		p.runtime.metrics.Counter("protorun.mailbox.dropped", 1,
 			Attr{Key: "protocol", Value: p.name},
 			Attr{Key: "kind", Value: dropped.kind.String()},
-			Attr{Key: "policy", Value: p.mailbox.policy().String()})
+			Attr{Key: "policy", Value: mailbox.policy().String()})
 		p.runtime.emitDeadLetter(DeadLetter{
 			Protocol: p.name,
 			Kind:     dropped.kind.String(),
 			Peer:     dropped.peer(),
 		})
 	}
-	p.strictMailboxOccupancy(depth)
+	p.strictMailboxOccupancy(mailbox, depth)
 	return true
 }
 
@@ -467,9 +602,26 @@ func (p *protoProtocol) safeCall(where string, fn func()) {
 	defer func() {
 		if rec := recover(); rec != nil {
 			p.reportPanic(where, rec, debug.Stack())
+			p.handPanicToSupervisor(where, rec)
 		}
 	}()
 	fn()
+}
+
+// handPanicToSupervisor routes a recovered handler panic to the
+// protocol's supervisor and asks the event loop to exit so the
+// directive is applied off the loop. Resume (the default) has no
+// supervisor, so this is a no-op and the loop keeps running exactly
+// as before. Called by safeCall and by the request-handler closure in
+// RegisterRequestHandler, which recovers before safeCall can (to
+// auto-fail its responder) and must not swallow the panic from the
+// supervisor's point of view.
+func (p *protoProtocol) handPanicToSupervisor(where string, rec any) {
+	if p.supervisor == nil {
+		return
+	}
+	p.supervisor.signalPanic(where, rec)
+	p.exitLoop.Store(true)
 }
 
 // reportPanic logs the panic with structured fields and notifies an

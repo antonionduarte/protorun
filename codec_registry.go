@@ -46,3 +46,20 @@ func (r *codecRegistry) Get(wireID uint64) (codecEntry, bool) {
 	r.mu.RUnlock()
 	return e, ok
 }
+
+// RemoveOwner deletes every wireID routed to proto. Called by the
+// supervisor during restart/stop so the old instance's codecs and
+// wire routes disappear (its wireIDs then fall through to the
+// unknown-wireID path until the fresh instance re-registers). The map
+// is scanned rather than reverse-indexed: registration/removal are
+// cold paths, so the O(n) sweep costs nothing the hot read path pays
+// for.
+func (r *codecRegistry) RemoveOwner(proto *protoProtocol) {
+	r.mu.Lock()
+	for id, e := range r.lookup {
+		if e.proto == proto {
+			delete(r.lookup, id)
+		}
+	}
+	r.mu.Unlock()
+}

@@ -22,9 +22,13 @@ package protorun
 //	result    terminal status of an IPC request: "completed",
 //	          "timeout", "no_handler", "responder_failed".
 //	kind      mailbox event kind for a dropped event ("message",
-//	          "timer", "session", "request", "reply", "notification").
+//	          "timer", "session", "request", "reply", "notification",
+//	          "callback").
 //	policy    mailbox overflow policy ("block", "drop_oldest",
-//	          "drop_newest", "unbounded").
+//	          "drop_newest", "unbounded"), or "quarantine" for events
+//	          dropped while a protocol is restarting.
+//	outcome   supervision result on protorun.protocol.restart:
+//	          "restarted", "stopped", "escalated".
 //
 // Names use the prefix "protorun." for everything the framework
 // emits so users can route them with a single label/regex.

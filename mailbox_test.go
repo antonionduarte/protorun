@@ -151,7 +151,7 @@ func TestRegister_WithMailbox(t *testing.T) {
 	rt := New(self)
 	rt.Register(&MockProtocol{}, WithMailbox(Mailbox{Capacity: 4, Overflow: OverflowDropOldest}))
 
-	mb := rt.protocols[0].mailbox
+	mb := rt.protocols[0].currentMailbox()
 	if mb.policy() != OverflowDropOldest {
 		t.Errorf("policy = %v, want drop_oldest", mb.policy())
 	}
@@ -167,7 +167,7 @@ func TestRegister_DefaultMailbox(t *testing.T) {
 	rt := New(self)
 	rt.Register(&MockProtocol{})
 
-	mb := rt.protocols[0].mailbox
+	mb := rt.protocols[0].currentMailbox()
 	if mb.policy() != OverflowBlock {
 		t.Errorf("default policy = %v, want block", mb.policy())
 	}
