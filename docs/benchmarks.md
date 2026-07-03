@@ -110,7 +110,7 @@ waiting on the result channel, which is why it runs higher than the
 
 | Benchmark | ns/op | B/op | allocs/op |
 |---|---:|---:|---:|
-| `ProcessMessage` | 642.0 | 344 | 17 |
+| `ProcessMessage` | 642.0 | 120 | 5 |
 
 Decode wireID header, codec lookup, `Unmarshal`, mailbox push — the
 complete `processMessage` path minus the socket read.
@@ -119,16 +119,28 @@ complete `processMessage` path minus the socket read.
 
 | Benchmark | ns/op | B/op | allocs/op |
 |---|---:|---:|---:|
-| `PublishNotification_Fanout/1subscriber` | 352.4 | 336 | 9 |
-| `PublishNotification_Fanout/10subscribers` | 3045 | 2640 | 45 |
-| `PublishNotification_Fanout/100subscribers` | 29959 | 25872 | 405 |
-| `SendRequest` | 776.1 | 986 | 20 |
+| `PublishNotification_Fanout/1subscriber` | 352.4 | 160 | 0 |
+| `PublishNotification_Fanout/10subscribers` | 3045 | 1600 | 0 |
+| `PublishNotification_Fanout/100subscribers` | 29959 | 16000 | 0 |
+| `SendRequest` | 776.1 | 619 | 6 |
 
-Fanout cost scales close to linearly with subscriber count (roughly
-70-300 ns of marginal cost per additional subscriber in this run) —
-expected, since publish enqueues one event per subscriber mailbox.
-`SendRequest` is a full local round trip: request enqueued, handler
-runs, `Responder.Reply` enqueues the reply, requester's callback runs.
+Publish is allocation-free per subscriber: the notification travels
+inline in the mailbox event (no envelope allocation), the subscriber
+snapshot is a copy-on-write slice returned without copying, and
+metric attributes are only built when a real `Metrics` implementation
+is installed. The residual B/op is mailbox ring/channel churn, not
+per-event garbage. Fanout cost still scales linearly with subscriber
+count — one mailbox push each. `SendRequest` is a full local round
+trip: request enqueued, handler runs, `Responder.Reply` enqueues the
+reply, requester's callback runs.
+
+Allocation counts above are from the post-optimization run
+(allocation counts are load-independent and exact). The ns/op
+figures are from the original idle-machine run and are conservative
+for the optimized code: the allocation pass cut hot-path work — e.g.
+10-subscriber fanout measured −28% ns/op before machine load made
+timing comparisons unreliable; re-measure with `make bench` on an
+idle machine.
 
 ### Real TCP round trip
 

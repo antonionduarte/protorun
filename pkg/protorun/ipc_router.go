@@ -8,19 +8,23 @@ import "sync"
 // changed" pattern).
 //
 // Read on every SendRequest and PublishNotification; write at
-// registration / subscription time. sync.RWMutex on the request
-// side, sync.RWMutex on the notification side.
+// registration / subscription time. The notification fan-out is kept
+// as an immutable, subscription-ordered slice per wireID, replaced
+// wholesale on every (cold) mutation — so the (hot) publish path can
+// return it without copying, and fan-out order is deterministic
+// (subscription order) rather than map-iteration order, which the
+// prototest simulator's reproducibility relies on.
 type ipcRouter struct {
 	requestMu          sync.RWMutex
 	requestRoutes      map[uint64]requestRoute
 	notificationMu     sync.RWMutex
-	notificationFanout map[uint64]map[*protoProtocol]func(Notification)
+	notificationFanout map[uint64][]notificationSub
 }
 
 func newIPCRouter() *ipcRouter {
 	return &ipcRouter{
 		requestRoutes:      make(map[uint64]requestRoute),
-		notificationFanout: make(map[uint64]map[*protoProtocol]func(Notification)),
+		notificationFanout: make(map[uint64][]notificationSub),
 	}
 }
 
@@ -49,30 +53,34 @@ func (r *ipcRouter) Route(wireID uint64) (requestRoute, bool) {
 
 // Subscribe adds proto as a subscriber for wireID's notifications.
 // Replaces any prior subscription from the same proto for the same
-// wireID.
+// wireID (keeping the original position). Copy-on-write: the stored
+// slice is never mutated in place, because publishers may still be
+// ranging over the previous snapshot.
 func (r *ipcRouter) Subscribe(wireID uint64, proto *protoProtocol, fn func(Notification)) {
 	r.notificationMu.Lock()
 	defer r.notificationMu.Unlock()
-	subs, ok := r.notificationFanout[wireID]
-	if !ok {
-		subs = make(map[*protoProtocol]func(Notification))
-		r.notificationFanout[wireID] = subs
+	old := r.notificationFanout[wireID]
+	subs := make([]notificationSub, len(old), len(old)+1)
+	copy(subs, old)
+	for i := range subs {
+		if subs[i].proto == proto {
+			subs[i].fn = fn
+			r.notificationFanout[wireID] = subs
+			return
+		}
 	}
-	subs[proto] = fn
+	r.notificationFanout[wireID] = append(subs, notificationSub{proto: proto, fn: fn})
 }
 
 // Unsubscribe removes proto from the fan-out for wireID. No-op if it
 // wasn't subscribed; cleans up the empty bucket so the fanout map
-// doesn't accumulate entries for unsubscribed types.
+// doesn't accumulate entries for unsubscribed types. Copy-on-write,
+// same as Subscribe.
 func (r *ipcRouter) Unsubscribe(wireID uint64, proto *protoProtocol) {
 	r.notificationMu.Lock()
 	defer r.notificationMu.Unlock()
-	subs, ok := r.notificationFanout[wireID]
-	if !ok {
-		return
-	}
-	delete(subs, proto)
-	if len(subs) == 0 {
+	r.notificationFanout[wireID] = removeSub(r.notificationFanout[wireID], proto)
+	if len(r.notificationFanout[wireID]) == 0 {
 		delete(r.notificationFanout, wireID)
 	}
 }
@@ -81,7 +89,7 @@ func (r *ipcRouter) Unsubscribe(wireID uint64, proto *protoProtocol) {
 // request-handler routes and all of its notification subscriptions.
 // Called by the supervisor during restart/stop so the old instance
 // stops receiving requests and notifications before the fresh
-// instance re-registers. Both maps are scanned rather than
+// instance re-registers. Both tables are scanned rather than
 // reverse-indexed: registration/removal are cold paths.
 func (r *ipcRouter) RemoveOwner(proto *protoProtocol) {
 	r.requestMu.Lock()
@@ -94,31 +102,46 @@ func (r *ipcRouter) RemoveOwner(proto *protoProtocol) {
 
 	r.notificationMu.Lock()
 	for id, subs := range r.notificationFanout {
-		delete(subs, proto)
-		if len(subs) == 0 {
+		trimmed := removeSub(subs, proto)
+		if len(trimmed) == 0 {
 			delete(r.notificationFanout, id)
+			continue
 		}
+		r.notificationFanout[id] = trimmed
 	}
 	r.notificationMu.Unlock()
 }
 
-// SnapshotSubscribers returns the (proto, handler) pairs subscribed
-// to wireID. Snapshotted under lock so the caller can fan out without
-// holding the mutex (channel sends can block on slow consumers).
+// removeSub returns subs without proto's entry. When proto is present
+// a fresh slice is built (copy-on-write); when absent, subs is
+// returned unchanged with no allocation.
+func removeSub(subs []notificationSub, proto *protoProtocol) []notificationSub {
+	for i := range subs {
+		if subs[i].proto != proto {
+			continue
+		}
+		out := make([]notificationSub, 0, len(subs)-1)
+		out = append(out, subs[:i]...)
+		return append(out, subs[i+1:]...)
+	}
+	return subs
+}
+
+// SnapshotSubscribers returns the subscribers for wireID in
+// subscription order. The returned slice is the router's immutable
+// current version (mutations replace it, never edit it), so the hot
+// publish path performs zero copies and the caller can fan out
+// without holding the mutex (mailbox pushes can block on slow
+// consumers). Callers MUST NOT modify the returned slice.
 func (r *ipcRouter) SnapshotSubscribers(wireID uint64) []notificationSub {
 	r.notificationMu.RLock()
 	subs := r.notificationFanout[wireID]
-	out := make([]notificationSub, 0, len(subs))
-	for proto, fn := range subs {
-		out = append(out, notificationSub{proto: proto, fn: fn})
-	}
 	r.notificationMu.RUnlock()
-	return out
+	return subs
 }
 
-// notificationSub is a flat (proto, handler) pair returned by
-// SnapshotSubscribers. Kept tiny so the fanout snapshot doesn't
-// allocate a map on every Publish.
+// notificationSub is a flat (proto, handler) pair held in the
+// fan-out table.
 type notificationSub struct {
 	proto *protoProtocol
 	fn    func(Notification)

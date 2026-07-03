@@ -53,12 +53,16 @@ func WithMetrics(m Metrics) Option {
 			return
 		}
 		r.metrics = m
+		r.metricsEnabled = true
 	}
 }
 
-// noopMetrics is the zero-cost default Metrics implementation. Picked
-// up by New when no WithMetrics option is supplied. Methods are
-// inlinable, so a no-op runtime pays roughly nothing per Counter call.
+// noopMetrics is the default Metrics implementation. Picked up by New
+// when no WithMetrics option is supplied. The methods are empty, but
+// calling them through the Metrics interface still heap-allocates the
+// variadic attribute list at the call site — which is why hot paths
+// additionally guard on Runtime.metricsEnabled instead of relying on
+// the no-op being cheap.
 type noopMetrics struct{}
 
 func (noopMetrics) Counter(_ string, _ int64, _ ...Attr)     {}

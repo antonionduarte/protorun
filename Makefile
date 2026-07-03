@@ -60,8 +60,14 @@ coverage:
 vulncheck:
 	@for m in $(MODULES); do echo "==> vulncheck $$m"; (cd $$m && go run golang.org/x/vuln/cmd/govulncheck@latest ./...) || exit 1; done
 
+# deadcode exits 0 even when it reports findings, so the gate fails on
+# any output instead of on the exit code.
 deadcode:
-	@for m in $(MODULES); do echo "==> deadcode $$m"; (cd $$m && go run golang.org/x/tools/cmd/deadcode@latest -test ./...) || exit 1; done
+	@for m in $(MODULES); do \
+		echo "==> deadcode $$m"; \
+		out=$$(cd $$m && go run golang.org/x/tools/cmd/deadcode@latest -test ./...) || exit 1; \
+		if [ -n "$$out" ]; then echo "$$out"; exit 1; fi; \
+	done
 
 # Apply gopls' modernize fixes in place (sync.WaitGroup.Go, range-over-int,
 # t.Context(), maps/slices helpers, etc.). Idempotent — safe to re-run.

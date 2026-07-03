@@ -514,21 +514,31 @@ var scalarCodecs = map[reflect.Kind]valueCodec{
 		func(b []byte, v reflect.Value) { v.SetUint(uint64(b[0])) }),
 
 	reflect.Int16: fixedCodec(2,
-		func(dst []byte, v reflect.Value) []byte { return binary.LittleEndian.AppendUint16(dst, uint16(v.Int())) },
+		func(dst []byte, v reflect.Value) []byte {
+			return binary.LittleEndian.AppendUint16(dst, uint16(v.Int()))
+		},
 		func(b []byte, v reflect.Value) { v.SetInt(int64(int16(binary.LittleEndian.Uint16(b)))) }),
 	reflect.Uint16: fixedCodec(2,
-		func(dst []byte, v reflect.Value) []byte { return binary.LittleEndian.AppendUint16(dst, uint16(v.Uint())) },
+		func(dst []byte, v reflect.Value) []byte {
+			return binary.LittleEndian.AppendUint16(dst, uint16(v.Uint()))
+		},
 		func(b []byte, v reflect.Value) { v.SetUint(uint64(binary.LittleEndian.Uint16(b))) }),
 
 	reflect.Int32: fixedCodec(4,
-		func(dst []byte, v reflect.Value) []byte { return binary.LittleEndian.AppendUint32(dst, uint32(v.Int())) },
+		func(dst []byte, v reflect.Value) []byte {
+			return binary.LittleEndian.AppendUint32(dst, uint32(v.Int()))
+		},
 		func(b []byte, v reflect.Value) { v.SetInt(int64(int32(binary.LittleEndian.Uint32(b)))) }),
 	reflect.Uint32: fixedCodec(4,
-		func(dst []byte, v reflect.Value) []byte { return binary.LittleEndian.AppendUint32(dst, uint32(v.Uint())) },
+		func(dst []byte, v reflect.Value) []byte {
+			return binary.LittleEndian.AppendUint32(dst, uint32(v.Uint()))
+		},
 		func(b []byte, v reflect.Value) { v.SetUint(uint64(binary.LittleEndian.Uint32(b))) }),
 
 	reflect.Int64: fixedCodec(8,
-		func(dst []byte, v reflect.Value) []byte { return binary.LittleEndian.AppendUint64(dst, uint64(v.Int())) },
+		func(dst []byte, v reflect.Value) []byte {
+			return binary.LittleEndian.AppendUint64(dst, uint64(v.Int()))
+		},
 		func(b []byte, v reflect.Value) { v.SetInt(int64(binary.LittleEndian.Uint64(b))) }),
 	reflect.Uint64: fixedCodec(8,
 		func(dst []byte, v reflect.Value) []byte { return binary.LittleEndian.AppendUint64(dst, v.Uint()) },
@@ -538,7 +548,9 @@ var scalarCodecs = map[reflect.Kind]valueCodec{
 		func(dst []byte, v reflect.Value) []byte {
 			return binary.LittleEndian.AppendUint32(dst, math.Float32bits(float32(v.Float())))
 		},
-		func(b []byte, v reflect.Value) { v.SetFloat(float64(math.Float32frombits(binary.LittleEndian.Uint32(b)))) }),
+		func(b []byte, v reflect.Value) {
+			v.SetFloat(float64(math.Float32frombits(binary.LittleEndian.Uint32(b))))
+		}),
 	reflect.Float64: fixedCodec(8,
 		func(dst []byte, v reflect.Value) []byte {
 			return binary.LittleEndian.AppendUint64(dst, math.Float64bits(v.Float()))

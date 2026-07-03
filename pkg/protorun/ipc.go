@@ -127,14 +127,6 @@ type inboundReply struct {
 	err       error
 }
 
-// inboundNotification is the envelope pushed onto a subscriber's
-// notificationEvents channel. The handler closure is captured at
-// Subscribe time and travels with the envelope.
-type inboundNotification struct {
-	n       Notification
-	handler func(Notification)
-}
-
 // pendingRequest is the per-outstanding-request state on the requester
 // side. Stored in protoProtocol.pending until either a reply lands or
 // the timeout fires (whichever first).

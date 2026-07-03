@@ -139,19 +139,24 @@ func (k protoEventKind) String() string {
 // that preceded it are handled in the order they were enqueued, not in
 // the order a multi-channel select happened to pick.
 //
-// The hot-path payloads (message, timer) are inline. The rarer session
-// and IPC payloads live behind aux so the value copied through the
-// mailbox stays small; those kinds already allocate a handler closure,
-// so one more small allocation on their path is free.
+// The hot-path payloads (message, notification, timer) are inline —
+// notifications share the payload slot with messages since the two
+// kinds never coexist, which is what makes a publish zero-alloc per
+// subscriber. The rarer session and IPC payloads live behind aux so
+// the value copied through the mailbox stays small (the struct must
+// stay under gocritic's 80-byte hugeParam bar; it is 72 today).
 //
 // Only the fields named by kind are meaningful; the rest are zero.
 type protoEvent struct {
 	kind protoEventKind
 
-	msg   Message        // evMessage
-	from  transport.Host // evMessage
-	timer *timerHandle   // evTimer
-	aux   *eventAux      // evSession, evRequest, evReply, evNotification, evCallback
+	// payload carries the decoded Message (evMessage) or the published
+	// Notification (evNotification); dispatch asserts by kind.
+	payload any
+	from    transport.Host     // evMessage
+	notifFn func(Notification) // evNotification: the subscriber's handler
+	timer   *timerHandle       // evTimer
+	aux     *eventAux          // evSession, evRequest, evReply, evCallback
 }
 
 // eventAux holds the payload for the non-hot event kinds. Exactly one
@@ -160,7 +165,6 @@ type eventAux struct {
 	session sessionEvent
 	request inboundRequest
 	reply   inboundReply
-	notif   inboundNotification
 	run     func() // evCallback
 }
 

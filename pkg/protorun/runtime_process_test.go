@@ -72,8 +72,8 @@ func TestProcessMessage_DispatchesToHandler(t *testing.T) {
 	if ev.kind != evMessage {
 		t.Fatalf("expected a message event, got kind=%v", ev.kind)
 	}
-	if _, ok := ev.msg.(*localMessage); !ok {
-		t.Fatalf("expected *localMessage, got %T", ev.msg)
+	if _, ok := ev.payload.(*localMessage); !ok {
+		t.Fatalf("expected *localMessage, got %T", ev.payload)
 	}
 }
 

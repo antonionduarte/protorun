@@ -121,13 +121,13 @@ func BenchmarkMailbox_EnqueueDispatchLatency(b *testing.B) {
 			if !ok {
 				return
 			}
-			latencies <- time.Since(ev.msg.(*benchTimedMsg).Sent)
+			latencies <- time.Since(ev.payload.(*benchTimedMsg).Sent)
 		}
 	}()
 
 	var total time.Duration
 	for b.Loop() {
-		mb.push(ctx, protoEvent{kind: evMessage, msg: &benchTimedMsg{Sent: time.Now()}})
+		mb.push(ctx, protoEvent{kind: evMessage, payload: &benchTimedMsg{Sent: time.Now()}})
 		total += <-latencies
 	}
 	b.ReportMetric(float64(total.Nanoseconds())/float64(b.N), "ns/dispatch")

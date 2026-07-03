@@ -192,8 +192,8 @@ func TestEnqueue_DropRoutesToDeadLetterAndMetrics(t *testing.T) {
 
 	peerA := transport.NewHost(1, "127.0.0.1")
 	peerB := transport.NewHost(2, "127.0.0.1")
-	proto.enqueue(rt.ctx, protoEvent{kind: evMessage, msg: &localMessage{}, from: peerA})
-	proto.enqueue(rt.ctx, protoEvent{kind: evMessage, msg: &localMessage{}, from: peerB})
+	proto.enqueue(rt.ctx, protoEvent{kind: evMessage, payload: &localMessage{}, from: peerA})
+	proto.enqueue(rt.ctx, protoEvent{kind: evMessage, payload: &localMessage{}, from: peerB})
 
 	if len(got) != 1 {
 		t.Fatalf("expected 1 dead letter, got %d", len(got))

@@ -9,6 +9,29 @@ is versioned via the session-layer handshake (`transport.ProtocolVersion`).
 
 ## Unreleased
 
+### Performance
+
+- **Zero-allocation notification publish.** Profile-guided pass over
+  the hot paths (`go tool pprof -alloc_objects` on the repo benches):
+  publish went from 9/45/405 allocs/op at 1/10/100 subscribers to 0;
+  `processMessage` 17 → 5 allocs/op; `SendRequest` 20 → 6 allocs/op.
+  Three changes: (1) hot paths skip metric-attribute construction
+  entirely when `Metrics` is the no-op default (`metricsEnabled`
+  guard — the variadic `[]Attr` and its `fmt.Sprintf` inputs heap-
+  escaped on every event); (2) the per-publish subscriber snapshot is
+  now an immutable copy-on-write slice returned without copying,
+  which also makes fan-out order deterministic (subscription order,
+  not map order); (3) notifications travel inline in the mailbox
+  event union (shared payload slot with messages) instead of behind
+  a 160-byte heap envelope. Also guards the per-message Debug log
+  (slog evaluates args eagerly) and computes mailbox depth only when
+  metrics or strict mode will consume it.
+- The `deadcode` make target now fails on findings (the tool exits 0
+  even when it reports), and the logging-config API gained direct
+  unit tests after the cmd-module split moved its only callers out of
+  deadcode's per-module scope.
+
+
 > This block is structured by roadmap phase (`docs/roadmap.md`);
 > each phase header below is a tag boundary. v0.2.0 through v0.7.0
 > are tagged at their phase commits; v0.8.0 is tagged at the tip of

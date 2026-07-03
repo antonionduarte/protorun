@@ -110,6 +110,15 @@ type Runtime struct {
 	logger  *slog.Logger
 	metrics Metrics
 
+	// metricsEnabled is false while metrics is the no-op default. Hot
+	// paths (enqueue, publish, dispatch, request round trip) check it
+	// before building attribute lists: the interface call itself is
+	// cheap, but the variadic []Attr and the fmt.Sprintf feeding it
+	// escape to the heap on every event, which memory profiles showed
+	// was ~half of all hot-path allocations. Cold paths (drops,
+	// panics, session lifecycle) skip the guard for readability.
+	metricsEnabled bool
+
 	// Strict-mode toggles. See strict.go for the full list of checks
 	// they enable. strict=false (the default) makes them all no-ops.
 	strict               bool
@@ -508,8 +517,10 @@ func (r *Runtime) sendRequest(
 	requestID := requester.nextRequestID.Add(1)
 	token := replyToken{requester: requester, requestID: requestID}
 
-	wireIDAttr := Attr{Key: "wireID", Value: fmt.Sprintf("%#x", wireID)}
-	r.metrics.Counter("protorun.ipc.request.sent", 1, wireIDAttr)
+	if r.metricsEnabled {
+		r.metrics.Counter("protorun.ipc.request.sent", 1,
+			Attr{Key: "wireID", Value: fmt.Sprintf("%#x", wireID)})
+	}
 
 	now := r.clock.Now()
 	requester.pendingMu.Lock()
@@ -555,17 +566,23 @@ func (r *Runtime) unsubscribeNotification(proto *protoProtocol, wireID uint64) {
 // stop fanning out and return. The publisher should not block on
 // subscribers it doesn't know about.
 func (r *Runtime) publishNotification(wireID uint64, n Notification) {
-	wireIDAttr := Attr{Key: "wireID", Value: fmt.Sprintf("%#x", wireID)}
-	r.metrics.Counter("protorun.notification.published", 1, wireIDAttr)
+	var wireIDAttr Attr
+	if r.metricsEnabled {
+		wireIDAttr = Attr{Key: "wireID", Value: fmt.Sprintf("%#x", wireID)}
+		r.metrics.Counter("protorun.notification.published", 1, wireIDAttr)
+	}
 
 	for _, sub := range r.ipc.SnapshotSubscribers(wireID) {
 		if !sub.proto.enqueue(r.ctx, protoEvent{
-			kind: evNotification,
-			aux:  &eventAux{notif: inboundNotification{n: n, handler: sub.fn}},
+			kind:    evNotification,
+			payload: n,
+			notifFn: sub.fn,
 		}) {
 			return
 		}
-		r.metrics.Counter("protorun.notification.delivered", 1, wireIDAttr)
+		if r.metricsEnabled {
+			r.metrics.Counter("protorun.notification.delivered", 1, wireIDAttr)
+		}
 	}
 }
 
@@ -771,12 +788,11 @@ func (r *Runtime) processMessage(buffer bytes.Buffer, from transport.Host) {
 		r.metrics.Counter("protorun.message.dropped_header", 1)
 		return
 	}
-	wireIDAttr := Attr{Key: "wireID", Value: fmt.Sprintf("%#x", wireID)}
-
 	entry, exists := r.codecs.Get(wireID)
 	if !exists {
 		r.warnUnknownWireID(wireID, from)
-		r.metrics.Counter("protorun.message.dropped_unknown_id", 1, wireIDAttr)
+		r.metrics.Counter("protorun.message.dropped_unknown_id", 1,
+			Attr{Key: "wireID", Value: fmt.Sprintf("%#x", wireID)})
 		return
 	}
 	protocol := entry.proto
@@ -788,16 +804,26 @@ func (r *Runtime) processMessage(buffer bytes.Buffer, from transport.Host) {
 			"wireID", fmt.Sprintf("%#x", wireID),
 			"err", err,
 		)
-		r.metrics.Counter("protorun.message.dropped_decode_error", 1, wireIDAttr)
+		r.metrics.Counter("protorun.message.dropped_decode_error", 1,
+			Attr{Key: "wireID", Value: fmt.Sprintf("%#x", wireID)})
 		return
 	}
 
-	logger.Debug("dispatching message",
-		"from", from.String(),
-		"wireID", fmt.Sprintf("%#x", wireID),
-	)
-	r.metrics.Counter("protorun.message.dispatched", 1, wireIDAttr)
-	protocol.enqueue(r.ctx, protoEvent{kind: evMessage, msg: message, from: from})
+	// slog evaluates arguments eagerly, so an unguarded Debug here
+	// allocates two formatted strings plus the args slice per inbound
+	// message even when debug logging is disabled (the common case).
+	// r.ctx is the runtime's lifetime context, same one enqueue uses.
+	if logger.Enabled(r.ctx, slog.LevelDebug) {
+		logger.Debug("dispatching message",
+			"from", from.String(),
+			"wireID", fmt.Sprintf("%#x", wireID),
+		)
+	}
+	if r.metricsEnabled {
+		r.metrics.Counter("protorun.message.dispatched", 1,
+			Attr{Key: "wireID", Value: fmt.Sprintf("%#x", wireID)})
+	}
+	protocol.enqueue(r.ctx, protoEvent{kind: evMessage, payload: message, from: from})
 }
 
 // warnUnknownWireID logs "received message for unknown wireID" at most

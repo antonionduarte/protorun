@@ -494,7 +494,11 @@ func (p *protoProtocol) eventHandler(ctx context.Context, wg *sync.WaitGroup, do
 func (p *protoProtocol) dispatch(ev protoEvent) {
 	switch ev.kind {
 	case evMessage:
-		p.handleMessage(ev.msg, ev.from)
+		p.handleMessage(ev.payload.(Message), ev.from)
+	case evNotification:
+		n := ev.payload.(Notification)
+		fn := ev.notifFn
+		p.safeCall("notification handler", func() { fn(n) })
 	case evTimer:
 		// Recheck cancellation at dispatch time: the fire may have been
 		// queued before the user cancelled the handle. This is what
@@ -526,9 +530,6 @@ func (p *protoProtocol) dispatchAux(ev protoEvent) {
 		p.safeCall("request handler", func() { req.handler(req.req, req.token) })
 	case evReply:
 		p.safeCall("reply handler", func() { p.deliverReply(ev.aux.reply) })
-	case evNotification:
-		notif := ev.aux.notif
-		p.safeCall("notification handler", func() { notif.handler(notif.n) })
 	case evCallback:
 		// Runtime-internal lifecycle callback (RestartHandler.OnRestart),
 		// run on the loop like any handler so it observes protocol state
@@ -582,9 +583,17 @@ func (p *protoProtocol) enqueue(ctx context.Context, ev protoEvent) bool {
 		// Either way one dispatch will not happen, so undo one count.
 		p.inFlight.Add(-1)
 	}
-	depth := mailbox.depth()
-	p.runtime.metrics.Histogram("protorun.mailbox.depth", float64(depth),
-		Attr{Key: "protocol", Value: p.name})
+	// depth() takes the deque lock for the drop/unbounded policies, and
+	// the histogram's Attr list heap-escapes on every enqueue — only pay
+	// for either when someone (metrics or strict mode) will look.
+	if p.runtime.metricsEnabled || p.runtime.strict {
+		depth := mailbox.depth()
+		if p.runtime.metricsEnabled {
+			p.runtime.metrics.Histogram("protorun.mailbox.depth", float64(depth),
+				Attr{Key: "protocol", Value: p.name})
+		}
+		p.strictMailboxOccupancy(mailbox, depth)
+	}
 	if didDrop {
 		p.runtime.metrics.Counter("protorun.mailbox.dropped", 1,
 			Attr{Key: "protocol", Value: p.name},
@@ -596,7 +605,6 @@ func (p *protoProtocol) enqueue(ctx context.Context, ev protoEvent) bool {
 			Peer:     dropped.peer(),
 		})
 	}
-	p.strictMailboxOccupancy(mailbox, depth)
 	return true
 }
 
@@ -719,7 +727,7 @@ func (p *protoProtocol) deliverReply(rep inboundReply) {
 		p.strictReplyWithoutHandler()
 		return
 	}
-	if p.runtime != nil {
+	if p.runtime != nil && p.runtime.metricsEnabled {
 		wireIDAttr := Attr{Key: "wireID", Value: fmt.Sprintf("%#x", pending.wireID)}
 		resultAttr := Attr{Key: "result", Value: replyResultLabel(rep.err)}
 		p.runtime.metrics.Counter("protorun.ipc.request.completed", 1, wireIDAttr, resultAttr)
