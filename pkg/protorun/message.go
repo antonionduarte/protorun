@@ -79,6 +79,10 @@ func (r *Runtime) sendMessage(msg Message, sendTo transport.Host) error {
 	}
 	buffer.Write(payload)
 
+	if r.tracerEnabled {
+		r.trace(&TraceEvent{Kind: "send", Peer: sendTo, Wire: wireID, Bytes: len(payload)})
+	}
+
 	if sendTo == r.self {
 		r.processMessage(buffer, r.self)
 		return nil

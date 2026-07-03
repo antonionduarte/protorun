@@ -17,8 +17,17 @@ Everything below v1.0 may break API and wire format.
       Deviation: plumtree tree edges are derived from the Gossip/
       Prune/Graft/IHave stream, since `DebugStatsReply` carries only
       counters, not per-peer eager/lazy lists.
-- [ ] Phase C: live mode — `Tracer` runtime seam, `cmd/protoviz`
-      server, WebSocket streaming.
+- [x] Phase C: live mode — `Tracer` runtime seam
+      (`protorun.WithTracer`, metrics-style fast path, zero
+      perturbation when off), stdlib-only `cmd/protoviz` server
+      (SSE `/events` with a bounded replay ring, `/ingest` JSONL from
+      cluster tracers, `-replay` demo mode), `cmd/internal/viztrace`
+      HTTP tracer (bounded drop-oldest ring, batched POSTs) wired into
+      `cmd/broadcast -viz`, and viewer live mode (EventSource loader,
+      incremental append fold, follow-mode scrubber). Deviation from
+      the sketch: SSE, not WebSocket — one-way streaming needs nothing
+      more; deliver events are receiver-authoritative (sends forwarded
+      as `kind:"send"` for future use).
 
 ## Pending (v0.9 API window — consensus-author friction)
 

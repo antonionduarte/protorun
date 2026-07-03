@@ -199,62 +199,97 @@ function applyFault(w: WorldState, ev: TraceEvent): void {
 }
 
 /**
- * The fold engine over a parsed trace: precomputes keyframes and a step->index
- * map, and answers world-state queries by step (or index) in ~O(KEYFRAME_EVERY).
+ * The fold engine over a parsed trace: precomputes keyframes and answers
+ * world-state queries by step (or index) in ~O(KEYFRAME_EVERY).
+ *
+ * Live-capable: `append` extends the trace in place and folds only the new
+ * events, so a live stream grows the same engine incrementally rather than
+ * rebuilding from scratch. Keyframes are captured at every global index that
+ * is a multiple of KEYFRAME_EVERY, an invariant that holds under incremental
+ * growth because events are appended contiguously. `indexForStep` binary-
+ * searches the events (whose `step` is non-decreasing in arrival order), so
+ * no fixed-size step→index table is needed.
  */
 export class FoldEngine {
   readonly trace: ParsedTrace;
   private keyframes: WorldState[] = [];
-  /** stepIndex[s] = last event index whose step <= s (monotone, -1 if none). */
-  private stepToIdx: Int32Array;
+  /** Running fold cursor and count of events already folded into keyframes. */
+  private cursor: WorldState = emptyWorld();
+  private built = 0;
 
   constructor(trace: ParsedTrace) {
     this.trace = trace;
+    this.ingest();
+  }
 
-    // Build step -> last-index map. Events are in file order; step is
-    // non-decreasing across progress events but drop/fault/state reuse the
-    // current step, so we take the max index seen per step and fill forward.
-    const maxStep = trace.maxStep;
-    this.stepToIdx = new Int32Array(maxStep + 1).fill(-1);
-    for (const ev of trace.events) {
-      const s = Math.min(ev.step, maxStep);
-      if (ev.idx > this.stepToIdx[s]) this.stepToIdx[s] = ev.idx;
-    }
-    // Forward-fill: a step with no event of its own inherits the prior cursor.
-    let last = -1;
-    for (let s = 0; s <= maxStep; s++) {
-      if (this.stepToIdx[s] < last) this.stepToIdx[s] = last;
-      else last = this.stepToIdx[s];
-    }
-
-    // Precompute keyframes every KEYFRAME_EVERY events.
-    const w = emptyWorld();
-    for (let i = 0; i < trace.events.length; i++) {
-      const ev = trace.events[i];
-      apply(w, ev);
-      w.idx = i;
-      w.step = ev.step;
+  /** Fold every not-yet-folded event, capturing keyframes on the way. */
+  private ingest(): void {
+    const events = this.trace.events;
+    for (let i = this.built; i < events.length; i++) {
+      const ev = events[i];
+      apply(this.cursor, ev);
+      this.cursor.idx = i;
+      this.cursor.step = ev.step;
       if (i % KEYFRAME_EVERY === 0) {
-        this.keyframes.push(cloneWorld(w));
+        this.keyframes.push(cloneWorld(this.cursor));
       }
     }
-    // Ensure a keyframe at index 0 exists even for an empty trace.
-    if (this.keyframes.length === 0) this.keyframes.push(cloneWorld(w));
+    this.built = events.length;
+  }
+
+  /**
+   * Append live events: push them onto the trace, refresh the trace's derived
+   * aggregates (maxStep, wire/protocol rosters), and fold only the new tail.
+   */
+  append(newEvents: TraceEvent[]): void {
+    if (newEvents.length === 0) return;
+    const t = this.trace;
+    const wireTypes = new Set(t.wireTypes);
+    const protocols = new Set(t.protocols);
+    const nodeProtocols = new Set(t.nodeProtocols);
+    const roster = new Set(t.meta.nodes);
+    for (const ev of newEvents) {
+      ev.idx = t.events.length;
+      t.events.push(ev);
+      if (ev.step > t.maxStep) t.maxStep = ev.step;
+      if (ev.wire) wireTypes.add(ev.wire);
+      if (ev.kind === "state" && ev.protocol) protocols.add(ev.protocol);
+      if (ev.kind === "node") {
+        if (ev.host) roster.add(ev.host);
+        if (ev.protocols) for (const p of ev.protocols) nodeProtocols.add(p);
+      }
+    }
+    t.wireTypes = [...wireTypes].sort();
+    t.protocols = [...protocols].sort();
+    t.nodeProtocols = [...nodeProtocols].sort();
+    t.meta.nodes = [...roster];
+    this.ingest();
   }
 
   /** Map a display step to the inclusive event index the fold should reach. */
   indexForStep(step: number): number {
-    if (step < 0) return -1;
-    if (step >= this.stepToIdx.length) {
-      return this.trace.events.length - 1;
+    const events = this.trace.events;
+    if (step < 0 || events.length === 0) return -1;
+    // Largest index whose step <= the target (events are step-sorted).
+    let lo = 0;
+    let hi = events.length - 1;
+    let ans = -1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (events[mid].step <= step) {
+        ans = mid;
+        lo = mid + 1;
+      } else {
+        hi = mid - 1;
+      }
     }
-    return this.stepToIdx[step];
+    return ans;
   }
 
   /** Fold to an inclusive event index. */
   worldAtIndex(targetIdx: number): WorldState {
     const events = this.trace.events;
-    if (targetIdx < 0) {
+    if (targetIdx < 0 || events.length === 0) {
       const w = emptyWorld();
       w.current = [];
       return w;
@@ -262,17 +297,16 @@ export class FoldEngine {
     const clamped = Math.min(targetIdx, events.length - 1);
 
     // Nearest keyframe at or before the target.
-    let kf = this.keyframes[0];
     const kfIdx = Math.floor(clamped / KEYFRAME_EVERY);
-    if (kfIdx < this.keyframes.length && this.keyframes[kfIdx].idx <= clamped) {
-      kf = this.keyframes[kfIdx];
-    } else {
+    let kf: WorldState | undefined = this.keyframes[kfIdx];
+    if (!kf || kf.idx > clamped) {
       // Fall back to a linear scan (defensive; should not happen).
+      kf = undefined;
       for (const k of this.keyframes) if (k.idx <= clamped) kf = k;
     }
 
-    const w = cloneWorld(kf);
-    for (let i = kf.idx + 1; i <= clamped; i++) apply(w, events[i]);
+    const w = kf ? cloneWorld(kf) : emptyWorld();
+    for (let i = (kf ? kf.idx : -1) + 1; i <= clamped; i++) apply(w, events[i]);
     w.idx = clamped;
     w.step = events[clamped].step;
 

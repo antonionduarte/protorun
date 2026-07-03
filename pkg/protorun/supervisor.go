@@ -233,6 +233,9 @@ func (s *supervisor) finishRestart(attempt int) {
 	s.runtime.metrics.Counter("protorun.protocol.restart", 1,
 		Attr{Key: "protocol", Value: p.name},
 		Attr{Key: "outcome", Value: "restarted"})
+	if s.runtime.tracerEnabled {
+		s.runtime.trace(&TraceEvent{Kind: "restart", Detail: p.name})
+	}
 	s.runtime.publishProtocolFailed(p.name, "restarted", attempt)
 	s.runtime.Logger().Warn("protorun: protocol restarted",
 		"protocol", p.name, "attempt", attempt)
@@ -258,6 +261,9 @@ func (s *supervisor) stop() {
 	s.runtime.metrics.Counter("protorun.protocol.restart", 1,
 		Attr{Key: "protocol", Value: p.name},
 		Attr{Key: "outcome", Value: "stopped"})
+	if s.runtime.tracerEnabled {
+		s.runtime.trace(&TraceEvent{Kind: "stop", Detail: p.name})
+	}
 	s.runtime.publishProtocolFailed(p.name, "stopped", len(s.times))
 	s.runtime.Logger().Error("protorun: protocol stopped by supervisor", "protocol", p.name)
 }
@@ -274,6 +280,9 @@ func (s *supervisor) escalate(sig panicSignal) {
 	s.runtime.metrics.Counter("protorun.protocol.restart", 1,
 		Attr{Key: "protocol", Value: p.name},
 		Attr{Key: "outcome", Value: "escalated"})
+	if s.runtime.tracerEnabled {
+		s.runtime.trace(&TraceEvent{Kind: "escalate", Detail: p.name})
+	}
 	s.runtime.publishProtocolFailed(p.name, "escalated", len(s.times))
 	s.runtime.Logger().Error("protorun: protocol escalated; cancelling runtime",
 		"protocol", p.name, "where", sig.where, "recovered", fmt.Sprintf("%v", sig.rec))

@@ -11,6 +11,28 @@ is versioned via the session-layer handshake (`transport.ProtocolVersion`).
 
 ### Added (protoviz — visual protocol debugger)
 
+- **Live mode (Stage 3 / Phase C).** A `Tracer` runtime seam
+  (`protorun.WithTracer`, `pkg/protorun/tracer.go`) — the sibling of
+  `Metrics`, disabled by default, with the same guard-before-alloc fast
+  path so a run with no tracer installed is byte-for-byte unperturbed
+  (benchmarked: allocs/op unchanged). It emits one flat `TraceEvent` per
+  send / deliver / session-lifecycle / supervision outcome / dead-letter,
+  from the local node's point of view. A stdlib-only `cmd/protoviz`
+  server serves the built viewer plus a Server-Sent-Events stream:
+  `GET /events` (bounded replay ring — default 50k — then live tail,
+  15 s heartbeat), `POST /ingest?node=<host>` (line-delimited JSONL from
+  cluster tracers, annotated with the node and a server-side monotonic
+  `step`, runtime kinds converted to `protoviz/1`), and a `-replay
+  file -pace d` demo mode. `cmd/internal/viztrace.NewHTTPTracer` buffers
+  events in a bounded drop-oldest ring and POSTs batches every 250 ms so
+  `Trace` never blocks the cluster; `cmd/broadcast -viz <server>` wires
+  it in so the flagship demo streams itself. The viewer gains a "Connect
+  live" `EventSource` loader, an append-only incremental fold, a
+  follow-mode scrubber with a Live badge and jump-to-live, and
+  connection-state surfacing. Deliver events are receiver-authoritative
+  (a `send` is dropped from the topology/sequence record but forwarded as
+  `kind:"send"` for future lenses). See `docs/visualizer-design.md`'s
+  live-mode section.
 - **`viz/` viewer app** — a static Vite + React + TypeScript + Tailwind
   app with a default (neutral) shadcn/ui theme that opens `protoviz/1`
   JSONL traces (drag-and-drop or the four bundled samples) and lets you

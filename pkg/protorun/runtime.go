@@ -119,6 +119,14 @@ type Runtime struct {
 	// panics, session lifecycle) skip the guard for readability.
 	metricsEnabled bool
 
+	// tracer receives one TraceEvent per interesting runtime action for
+	// live protoviz streaming; nil by default. tracerEnabled gates every
+	// emit site the same way metricsEnabled gates metrics: the guard
+	// keeps the event literal off the heap on hot paths when no tracer is
+	// installed (the common case). See tracer.go.
+	tracer        Tracer
+	tracerEnabled bool
+
 	// Strict-mode toggles. See strict.go for the full list of checks
 	// they enable. strict=false (the default) makes them all no-ops.
 	strict               bool
@@ -602,6 +610,9 @@ func (r *Runtime) publishNotification(wireID uint64, n Notification) {
 // configured via WithDeadLetter. Called synchronously from the enqueue
 // path when a drop-policy mailbox evicts or rejects an event.
 func (r *Runtime) emitDeadLetter(dl DeadLetter) {
+	if r.tracerEnabled {
+		r.trace(&TraceEvent{Kind: "dead-letter", Peer: dl.Peer, Detail: dl.Protocol + "/" + dl.Kind})
+	}
 	if r.deadLetter != nil {
 		r.deadLetter(dl)
 	}
@@ -699,17 +710,20 @@ func (r *Runtime) dispatchSessionEvent(ctx context.Context, ev transport.Session
 	switch e := ev.(type) {
 	case *transport.SessionConnected:
 		r.metrics.Counter("protorun.session.connected", 1, Attr{Key: "host", Value: e.Host().String()})
+		r.traceSession("session-connected", e.Host())
 		r.markEstablished(e.Host())
 		r.onSessionUpForRetry(e.Host())
 		return r.fanoutSessionEvent(ctx, sessionEvent{kind: sessionConnectedEvent, host: e.Host()})
 	case *transport.SessionDisconnected:
 		r.metrics.Counter("protorun.session.disconnected", 1, Attr{Key: "host", Value: e.Host().String()})
+		r.traceSession("session-disconnected", e.Host())
 		r.markDisconnected(e.Host())
 		giveUp, attempts, _ := r.onSessionDownForRetry(e.Host())
 		if giveUp {
 			r.metrics.Counter("protorun.session.given_up", 1,
 				Attr{Key: "host", Value: e.Host().String()},
 				Attr{Key: "attempts", Value: attempts})
+			r.traceSession("session-givenup", e.Host())
 			if !r.fanoutSessionEvent(ctx, sessionEvent{kind: sessionGivenUpEvent, host: e.Host(), attempts: attempts}) {
 				return false
 			}
@@ -744,6 +758,7 @@ func (r *Runtime) dispatchSessionEvent(ctx context.Context, ev transport.Session
 		r.metrics.Counter("protorun.session.given_up", 1,
 			Attr{Key: "host", Value: e.Host().String()},
 			Attr{Key: "attempts", Value: attempts})
+		r.traceSession("session-givenup", e.Host())
 		return r.fanoutSessionEvent(ctx, sessionEvent{kind: sessionGivenUpEvent, host: e.Host(), attempts: attempts})
 	default:
 		// Every SessionEvent kind must have an explicit route here (and
@@ -774,11 +789,13 @@ func (r *Runtime) onSessionFailedEvent(ctx context.Context, host transport.Host)
 		r.metrics.Counter("protorun.session.given_up", 1,
 			Attr{Key: "host", Value: host.String()},
 			Attr{Key: "attempts", Value: attempts})
+		r.traceSession("session-givenup", host)
 		return r.fanoutSessionEvent(ctx, sessionEvent{kind: sessionGivenUpEvent, host: host, attempts: attempts})
 	}
 	if managed {
 		return true
 	}
+	r.traceSession("session-failed", host)
 	return r.fanoutSessionEvent(ctx, sessionEvent{kind: sessionFailedEvent, host: host})
 }
 
@@ -811,6 +828,10 @@ func (r *Runtime) processMessage(buffer bytes.Buffer, from transport.Host) {
 		r.metrics.Counter("protorun.message.dropped_header", 1)
 		return
 	}
+	// Body size after the 8-byte wireID header, captured before decode
+	// (unmarshal reads buffer.Bytes() without consuming it) for the
+	// deliver trace event below.
+	nbytes := buffer.Len()
 	entry, exists := r.codecs.Get(wireID)
 	if !exists {
 		r.warnUnknownWireID(wireID, from)
@@ -845,6 +866,9 @@ func (r *Runtime) processMessage(buffer bytes.Buffer, from transport.Host) {
 	if r.metricsEnabled {
 		r.metrics.Counter("protorun.message.dispatched", 1,
 			Attr{Key: "wireID", Value: fmt.Sprintf("%#x", wireID)})
+	}
+	if r.tracerEnabled {
+		r.trace(&TraceEvent{Kind: "deliver", Peer: from, Wire: wireID, Bytes: nbytes})
 	}
 	protocol.enqueue(r.ctx, protoEvent{kind: evMessage, payload: message, from: from})
 }

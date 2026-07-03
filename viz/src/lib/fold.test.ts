@@ -103,6 +103,73 @@ describe("FoldEngine keyframe correctness", () => {
     for (const ev of w.current) expect(ev.step).toBe(w.step);
   });
 
+  // Build a ParsedTrace holding only the first k events of `full`, the way a
+  // truncated (still-streaming) trace would arrive.
+  function truncate(full: ReturnType<typeof parseTrace>, k: number) {
+    const events = full.events.slice(0, k).map((e) => ({ ...e }));
+    return {
+      meta: { ...full.meta, nodes: [...full.meta.nodes] },
+      events,
+      maxStep: events.length ? events[events.length - 1].step : 0,
+      wireTypes: [],
+      protocols: [],
+      nodeProtocols: [],
+      warnings: [],
+    };
+  }
+
+  for (const file of ["raft-partition.jsonl", "hyparview-churn.jsonl"]) {
+    it(`append folds a truncated-then-extended ${file} identically to a full fold`, () => {
+      const full = parseTrace(sample(file));
+      const k = Math.floor(full.events.length * 0.4);
+
+      const partial = truncate(full, k);
+      const engine = new FoldEngine(partial);
+
+      // The truncated engine sees only the prefix.
+      expect(engine.worldAtIndex(full.events.length - 1).idx).toBe(k - 1);
+
+      // Extend with the remaining events, as the live stream would.
+      const rest = full.events.slice(k).map((e) => ({ ...e }));
+      engine.append(rest);
+
+      // maxStep and event count grew to the full trace.
+      expect(partial.events.length).toBe(full.events.length);
+      expect(partial.maxStep).toBe(full.maxStep);
+
+      // Fold at random indices — spanning at least one KEYFRAME_EVERY
+      // boundary — must equal the from-scratch reference fold.
+      const rand = mulberry32(7);
+      for (let t = 0; t < 60; t++) {
+        const idx = Math.floor(rand() * full.events.length);
+        const ref = referenceFold(full.events, idx);
+        const w = engine.worldAtIndex(idx);
+        expect(setEq(w.sessions, ref.sessions)).toBe(true);
+        expect(setEq(w.cutPairs, ref.cut)).toBe(true);
+        expect(setEq(w.isolated, ref.isolated)).toBe(true);
+        expect(w.nodes.slice().sort()).toEqual(ref.nodes.slice().sort());
+      }
+    });
+  }
+
+  it("append equals a single full construction (incremental == batch)", () => {
+    const full = parseTrace(sample("hyparview-churn.jsonl"));
+    const batch = new FoldEngine(full);
+
+    // Feed the same events one at a time into a fresh engine.
+    const partial = truncate(full, 0);
+    const live = new FoldEngine(partial);
+    for (const ev of full.events) live.append([{ ...ev }]);
+
+    for (const step of [0, 100, 500, 501, full.maxStep]) {
+      const a = batch.worldAtStep(step);
+      const b = live.worldAtStep(step);
+      expect(a.idx).toBe(b.idx);
+      expect(setEq(a.sessions, b.sessions)).toBe(true);
+      expect(a.nodes.slice().sort()).toEqual(b.nodes.slice().sort());
+    }
+  });
+
   it("latest state snapshot per (node,protocol) is exposed with a prior for diffing", () => {
     const trace = parseTrace(sample("raft-partition.jsonl"));
     const engine = new FoldEngine(trace);

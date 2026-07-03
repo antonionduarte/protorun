@@ -142,14 +142,14 @@ views": the floor is universal, the ceiling is pluggable.
 +---------------------------------------------------------------+
 | viz/  (Vite + React + TS + Tailwind + ShadCN, default theme)  |
 |   lenses/{topology,sequence,membership,tree,consensus}        |
-|   loads: trace file (drag-drop / URL)  |  live WebSocket      |
+|   loads: trace file (drag-drop)  |  live: EventSource /events |
 +-------------------------------▲-------------------------------+
-                                |  JSONL / WS frames
+                                |  JSONL lines / SSE data frames
 +-------------------------------+-------------------------------+
 | pkg/prototest: TraceRecorder  |  cmd/protoviz (live server)   |
-|  wraps a Sim: writes each     |  serves built UI + streams a  |
-|  stepInfo + session event +   |  Tracer's events over WS from |
-|  periodic DebugState samples  |  a real running cluster       |
+|  wraps a Sim: writes each     |  serves built UI + fans a     |
+|  stepInfo + session event +   |  cluster's Tracer streams out |
+|  periodic DebugState samples  |  over SSE (/events, /ingest)  |
 +---------------------------------------------------------------+
 ```
 
@@ -158,12 +158,13 @@ views": the floor is universal, the ceiling is pluggable.
   one option; failing tests can dump the trace as an artifact. The
   UI is a static bundle; opening a trace is drag-and-drop. No
   server, no runtime changes.
-- **Live (Phase C)**: a `Tracer` seam on the runtime (sibling of
-  `Metrics`: `WithTracer(t)`, no-op default, same
+- **Live (Phase C, as built)**: a `Tracer` seam on the runtime
+  (sibling of `Metrics`: `WithTracer(t)`, disabled-by-default, same
   guard-before-alloc discipline the metrics fast path uses), and
-  `cmd/protoviz` to serve UI + WebSocket. Live mode is lossy-by-
-  design (ring buffer, drop-oldest) so tracing can never backpressure
-  a real cluster.
+  `cmd/protoviz` to serve the UI + a Server-Sent-Events stream. Live
+  mode is lossy-by-design (bounded ring, drop-oldest) at every hop so
+  tracing can never backpressure a real cluster. See the live-mode
+  section below for the as-built shape.
 
 The UI lives in `viz/` at the repo root — not a Go module, excluded
 from the Go workspace; its build artifact can be embedded into
@@ -175,12 +176,82 @@ from the Go workspace; its build artifact can be embedded into
 |---|---|---|
 | A | Trace format + Sim recorder (`WithTrace`) + viewer app with Topology, Sequence, Inspector lenses + scrubber | the core; UI-heavy |
 | B | Protocol lenses: membership, broadcast-tree, consensus; trace-artifact-on-test-failure helper | per-lens, incremental |
-| C | Live mode: `Tracer` runtime seam, `cmd/protoviz`, WebSocket streaming, follow-mode UI | needs the seam design |
+| C | Live mode: `Tracer` runtime seam, `cmd/protoviz`, SSE streaming, follow-mode UI | done — see below |
 
 Phase A alone already delivers the original dream — scrub through a
 run, watch the overlay form, click nodes — with protorun's
 determinism turning the old project's two hardest TODOs (backward
 scrubbing, log production) into non-features.
+
+## Live mode (Phase C, as built)
+
+The live path streams a running cluster's events into the same viewer
+that opens a file, format-compatible with `protoviz/1`.
+
+**The `Tracer` seam** (`pkg/protorun/tracer.go`). `WithTracer(t)` is
+the sibling of `WithMetrics`: disabled by default, and every emit site
+(`sendMessage`, `processMessage`, `dispatchSessionEvent`, the
+supervisor outcomes, the dead-letter emit) guards on
+`Runtime.tracerEnabled` before building the event — no `TraceEvent` is
+allocated and no method is called when no tracer is installed
+(benchmarked: allocs/op unchanged). `TraceEvent` is flat and small
+(`Kind, Peer, Wire, Bytes, Detail, At`) and always from the local
+node's point of view; the server tags each stream by node. Kinds:
+`send`, `deliver`, `session-connected`/`-disconnected`/`-failed`/
+`-givenup`, `restart`/`stop`/`escalate`, `dead-letter`. `Trace` is
+called synchronously and MUST be fast and non-blocking (drop, never
+stall) — the runtime does not shield itself from a slow tracer beyond
+that contract.
+
+**The HTTP tracer** (`cmd/internal/viztrace`). `NewHTTPTracer(server,
+node)` honors that contract: `Trace` marshals into a bounded,
+drop-oldest ring and returns; a background goroutine POSTs batches to
+`/ingest?node=<host>` every 250 ms. A failed POST drops its batch.
+`cmd/broadcast -viz http://host:port` wires it in, so the flagship
+demo streams itself.
+
+**The server** (`cmd/protoviz`). One stdlib-only binary:
+
+- `GET /events` — SSE (`text/event-stream`). A bounded replay ring
+  (default 50k, `-ring`) means a late-joining viewer gets the ring
+  replayed then the live tail, with no gap or duplicate (a client is
+  registered and the ring snapshotted under one lock). Heartbeat
+  comment every 15 s.
+- `POST /ingest?node=<host>` — line-delimited JSONL from cluster HTTP
+  tracers. The server annotates each line with the `node` param and a
+  server-side monotonic `step` (so interleaved node streams have one
+  total order for the fold) and converts runtime kinds to the
+  `protoviz/1` kinds the viewer parses.
+- `-replay file -pace d` — stream an existing trace file over
+  `/events` at a fixed pace, so live-mode UX is demoable with zero
+  cluster setup.
+- Static UI from `-ui` (default `viz/dist`); a missing dir serves a
+  "`cd viz && npm run build`" page.
+
+**Ingest normalization — the deliver decision.** A message crossing
+the wire is reported twice: the sender emits `send`, the receiver
+emits `deliver`. Folding both into the topology/sequence lenses would
+double-count and, under loss, count messages that never arrived. So
+the server treats the **receiver's `deliver` as the authoritative
+record**: a receiver's `deliver` (whose `Peer` is the sender) becomes
+`{"kind":"deliver","from":Peer,"to":node}`. Sender-side `send` events
+are **dropped from that record** but still **forwarded as `kind:"send"`**
+for future lenses — nothing is thrown away on the wire. Session events
+map onto the existing session fold (`session-givenup` → a terminal
+`failed`, an edge removal); the lifecycle kinds pass through for future
+use.
+
+**The viewer.** The loader gains a "Connect live" URL box; connecting
+opens an `EventSource` on `/events`. Events append to an in-memory
+trace and the fold engine grows incrementally (append-only, keyframes
+extended in place, `indexForStep` a binary search — no rebuild per
+event). A follow toggle (default on) pins the scrubber to the newest
+step; scrubbing back disengages it; a Live badge + "Live" button
+re-engage. Connection state (connecting / live / reconnecting) shows in
+the header. Live runs have no seed banner and no virtual time — wall
+time (`t`) is displayed when present. The parser is tolerant of both
+the server's normalized `session` kind and the runtime's raw
+`session-connected`-style kinds.
 
 ## Open questions
 
@@ -189,9 +260,14 @@ scrubbing, log production) into non-features.
   it. Lean: snapshot every N steps + lazy re-fold for exact scrubs.
 - Lens plugin API stability: keep it internal (in-tree lenses only)
   until v1; third-party lenses are a post-launch idea.
-- Live-mode clock: wall-clock traces lack the Sim's total order;
-  the sequence lens needs per-node lanes + send/receive matching
-  (message ids) instead of a global step. Format v1 reserves fields.
-- Does `cmd/broadcast` grow a `--trace` flag so the flagship demo
-  doubles as the visualizer's demo data source? (Probably yes.)
+- Live-mode clock: wall-clock traces lack the Sim's total order.
+  Resolved for launch by having the **server** assign a monotonic
+  `step` as it ingests, giving the fold one total order across
+  interleaved node streams; wall time (`t`) is carried for display.
+  Per-node send/receive matching by message id (for a true live
+  sequence lens) is still future work; format v1 reserves the fields.
+- Does `cmd/broadcast` grow a trace flag so the flagship demo doubles
+  as the visualizer's demo data source? **Yes** — `-viz <server>`
+  installs the live HTTP tracer, so the demo streams itself to a
+  running `protoviz`.
 ```

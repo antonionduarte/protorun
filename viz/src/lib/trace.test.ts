@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import { parseTrace, TRACE_FORMAT, pairKey } from "./trace";
+import { parseLiveLine, parseTrace, TRACE_FORMAT, pairKey } from "./trace";
 
 const dir = path.dirname(fileURLToPath(import.meta.url));
 const samplesDir = path.resolve(dir, "../../sample-traces");
@@ -55,5 +55,76 @@ describe("parseTrace on real sample traces", () => {
 
   it("keys unordered pairs stably", () => {
     expect(pairKey("a:1", "b:2")).toBe(pairKey("b:2", "a:1"));
+  });
+
+  it("folds runtime live session kinds onto the session shape", () => {
+    // The live server emits "session", but the parser must also tolerate the
+    // runtime's own "session-connected" style kinds directly.
+    const text = [
+      `{"kind":"meta","format":"protoviz/1","seed":1,"nodes":["a:1","b:2"]}`,
+      `{"kind":"session-connected","step":1,"node":"a:1","peer":"b:2"}`,
+      `{"kind":"session-givenup","step":2,"node":"a:1","peer":"b:2"}`,
+    ].join("\n");
+    const parsed = parseTrace(text);
+    expect(parsed.warnings).toEqual([]);
+    expect(parsed.events.length).toBe(2);
+    expect(parsed.events[0].kind).toBe("session");
+    expect(parsed.events[0].event).toBe("connected");
+    // given-up is a terminal disconnect -> mapped to "failed" (edge removal).
+    expect(parsed.events[1].kind).toBe("session");
+    expect(parsed.events[1].event).toBe("failed");
+  });
+
+  it("tolerates live send and lifecycle kinds without warnings", () => {
+    const text = [
+      `{"kind":"meta","format":"protoviz/1","seed":1,"nodes":["a:1","b:2"]}`,
+      `{"kind":"send","step":1,"from":"a:1","to":"b:2","wire":"X"}`,
+      `{"kind":"restart","step":2,"detail":"raft.Raft"}`,
+      `{"kind":"dead-letter","step":3,"peer":"b:2","detail":"raft.Raft/message"}`,
+    ].join("\n");
+    const parsed = parseTrace(text);
+    expect(parsed.warnings).toEqual([]);
+    expect(parsed.events.map((e) => e.kind)).toEqual([
+      "send",
+      "restart",
+      "dead-letter",
+    ]);
+    expect(parsed.events[1].detail).toBe("raft.Raft");
+  });
+});
+
+describe("parseLiveLine (SSE line decoder)", () => {
+  it("decodes a meta line into a roster", () => {
+    const { meta, event } = parseLiveLine(
+      `{"kind":"meta","format":"protoviz/1","seed":9,"nodes":["a:1"]}`,
+      0
+    );
+    expect(event).toBeUndefined();
+    expect(meta?.nodes).toEqual(["a:1"]);
+  });
+
+  it("decodes a deliver line, assigning the given idx", () => {
+    const { event } = parseLiveLine(
+      `{"kind":"deliver","step":5,"from":"a:1","to":"b:2","wire":"X"}`,
+      42
+    );
+    expect(event?.idx).toBe(42);
+    expect(event?.kind).toBe("deliver");
+    expect(event?.from).toBe("a:1");
+  });
+
+  it("maps a live session-connected line", () => {
+    const { event } = parseLiveLine(
+      `{"kind":"session-connected","step":1,"node":"a:1","peer":"b:2"}`,
+      0
+    );
+    expect(event?.kind).toBe("session");
+    expect(event?.event).toBe("connected");
+  });
+
+  it("returns nothing for blank, unparseable, or unknown lines", () => {
+    expect(parseLiveLine("", 0)).toEqual({});
+    expect(parseLiveLine("not json", 0)).toEqual({});
+    expect(parseLiveLine(`{"kind":"mystery"}`, 0)).toEqual({});
   });
 });

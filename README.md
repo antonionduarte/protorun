@@ -533,6 +533,10 @@ protocol-specific lenses (membership, broadcast tree, raft/paxos
 consensus), and a state Inspector with per-key diffing. Backward scrubbing
 is free thanks to the simulator's determinism.
 
+It also runs **live**: a `protorun.WithTracer` seam streams a running cluster's
+events to the `cmd/protoviz` server over SSE, and the viewer's "Connect live"
+tails them in real time (`cmd/broadcast -viz http://localhost:7777`).
+
 ```bash
 cd viz && npm install && npm run dev   # then open a sample trace
 ```

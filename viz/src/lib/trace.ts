@@ -42,7 +42,18 @@ export type EventKind =
   | "drop"
   | "clock"
   | "fault"
-  | "state";
+  | "state"
+  // Live-mode kinds (Stage 3). "send" is the sender-side counterpart of
+  // "deliver", forwarded by the live server but not folded into topology
+  // (delivers are receiver-authoritative). The lifecycle kinds are runtime
+  // supervision/loss events, carried for future lenses; the fold ignores
+  // them today. Session lifecycle arrives folded as "session" (the server
+  // and the live-line decoder both map "session-connected" etc. onto it).
+  | "send"
+  | "restart"
+  | "stop"
+  | "escalate"
+  | "dead-letter";
 
 export type SessionEventName =
   | "connected"
@@ -97,6 +108,10 @@ export interface TraceEvent {
   // state
   protocol?: string;
   state?: unknown;
+
+  // live lifecycle (restart / stop / escalate / dead-letter): a free-text
+  // label, e.g. the protocol type or "protocol/kind" for a dead letter.
+  detail?: string;
 }
 
 export interface TraceMeta {
@@ -130,7 +145,107 @@ const KNOWN_KINDS = new Set<string>([
   "clock",
   "fault",
   "state",
+  "send",
+  "restart",
+  "stop",
+  "escalate",
+  "dead-letter",
 ]);
+
+/**
+ * Normalize a raw kind that may be one of the runtime's live session kinds
+ * ("session-connected" / "-disconnected" / "-failed" / "-givenup") onto the
+ * folded {kind:"session", event} shape the engine understands. Given-up is a
+ * terminal disconnect, so it maps to "failed" (edge removal). Any other kind
+ * is returned unchanged with no session event.
+ */
+function normalizeKind(kind: string): {
+  kind: string;
+  event?: SessionEventName;
+} {
+  if (!kind.startsWith("session-")) return { kind };
+  const suffix = kind.slice("session-".length);
+  const event: SessionEventName =
+    suffix === "connected"
+      ? "connected"
+      : suffix === "disconnected"
+        ? "disconnected"
+        : suffix === "failed" || suffix === "givenup"
+          ? "failed"
+          : "unknown";
+  return { kind: "session", event };
+}
+
+/**
+ * Decode one already-parsed JSON object into a TraceEvent, or null if its
+ * kind is unknown. Shared by the batch file parser and the live line
+ * decoder so both tolerate the same shapes. `meta` is not a fold event and
+ * returns null here (callers handle the roster separately).
+ */
+function decodeEvent(
+  obj: Record<string, unknown>,
+  idx: number
+): TraceEvent | null {
+  const rawKind = typeof obj.kind === "string" ? obj.kind : "";
+  const { kind, event: liveSession } = normalizeKind(rawKind);
+  if (kind === "meta" || !KNOWN_KINDS.has(kind)) return null;
+
+  return {
+    idx,
+    step: num(obj.step) ?? 0,
+    t: str(obj.t) ?? "",
+    kind: kind as EventKind,
+    host: str(obj.host),
+    protocols: has(obj, "protocols") ? strArr(obj.protocols) : undefined,
+    nodes: has(obj, "nodes") ? strArr(obj.nodes) : undefined,
+    event: liveSession ?? (str(obj.event) as SessionEventName | undefined),
+    node: str(obj.node),
+    peer: str(obj.peer),
+    from: str(obj.from),
+    to: str(obj.to),
+    wire: str(obj.wire),
+    bytes: num(obj.bytes),
+    reason: str(obj.reason),
+    mutation: str(obj.mutation),
+    params: isObj(obj.params)
+      ? (obj.params as Record<string, unknown>)
+      : undefined,
+    protocol: str(obj.protocol),
+    state: has(obj, "state") ? obj.state : undefined,
+    detail: str(obj.detail),
+  };
+}
+
+/**
+ * Decode one live JSONL line (from the /events SSE stream). Returns a meta
+ * roster, a fold event, or nothing (blank / unparseable / unknown line).
+ * `idx` is the next event index the caller will assign. Never throws.
+ */
+export function parseLiveLine(
+  raw: string,
+  idx: number
+): { meta?: TraceMeta; event?: TraceEvent } {
+  const line = raw.trim();
+  if (line === "") return {};
+  let obj: Record<string, unknown>;
+  try {
+    obj = JSON.parse(line) as Record<string, unknown>;
+  } catch {
+    return {};
+  }
+  if (obj.kind === "meta") {
+    return {
+      meta: {
+        format: str(obj.format) ?? "",
+        seed: num(obj.seed) ?? 0,
+        start: str(obj.start) ?? "",
+        nodes: strArr(obj.nodes),
+      },
+    };
+  }
+  const event = decodeEvent(obj, idx);
+  return event ? { event } : {};
+}
 
 /**
  * Parse a protoviz/1 JSONL string into a ParsedTrace. Tolerant: bad lines are
@@ -159,13 +274,9 @@ export function parseTrace(text: string): ParsedTrace {
       continue;
     }
 
-    const kind = typeof obj.kind === "string" ? obj.kind : "";
-    if (!KNOWN_KINDS.has(kind)) {
-      warnings.push(`line ${ln + 1}: unknown kind "${kind}", skipped`);
-      continue;
-    }
+    const rawKind = typeof obj.kind === "string" ? obj.kind : "";
 
-    if (kind === "meta") {
+    if (rawKind === "meta") {
       meta = {
         format: str(obj.format) ?? "",
         seed: num(obj.seed) ?? 0,
@@ -181,29 +292,11 @@ export function parseTrace(text: string): ParsedTrace {
       continue;
     }
 
-    const ev: TraceEvent = {
-      idx: events.length,
-      step: num(obj.step) ?? 0,
-      t: str(obj.t) ?? "",
-      kind: kind as EventKind,
-      host: str(obj.host),
-      protocols: has(obj, "protocols") ? strArr(obj.protocols) : undefined,
-      nodes: has(obj, "nodes") ? strArr(obj.nodes) : undefined,
-      event: str(obj.event) as SessionEventName | undefined,
-      node: str(obj.node),
-      peer: str(obj.peer),
-      from: str(obj.from),
-      to: str(obj.to),
-      wire: str(obj.wire),
-      bytes: num(obj.bytes),
-      reason: str(obj.reason),
-      mutation: str(obj.mutation),
-      params: isObj(obj.params)
-        ? (obj.params as Record<string, unknown>)
-        : undefined,
-      protocol: str(obj.protocol),
-      state: has(obj, "state") ? obj.state : undefined,
-    };
+    const ev = decodeEvent(obj, events.length);
+    if (!ev) {
+      warnings.push(`line ${ln + 1}: unknown kind "${rawKind}", skipped`);
+      continue;
+    }
 
     if (ev.step > maxStep) maxStep = ev.step;
     if (ev.wire) wireTypes.add(ev.wire);
@@ -238,6 +331,23 @@ export function parseTrace(text: string): ParsedTrace {
     protocols: [...protocols].sort(),
     nodeProtocols: [...nodeProtocols].sort(),
     warnings,
+  };
+}
+
+/**
+ * An empty trace, the starting point for a live connection: the fold engine
+ * grows it in place as events stream in. It carries no meta (no seed, no
+ * roster) — live runs have no reproduce seed and no seed banner.
+ */
+export function emptyTrace(): ParsedTrace {
+  return {
+    meta: { format: "", seed: 0, start: "", nodes: [] },
+    events: [],
+    maxStep: 0,
+    wireTypes: [],
+    protocols: [],
+    nodeProtocols: [],
+    warnings: [],
   };
 }
 

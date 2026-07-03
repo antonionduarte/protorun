@@ -26,6 +26,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/antonionduarte/protorun/cmd/internal/viztrace"
 	"github.com/antonionduarte/protorun/pkg/protocols/hyparview"
 	"github.com/antonionduarte/protorun/pkg/protocols/plumtree"
 	"github.com/antonionduarte/protorun/pkg/protorun"
@@ -52,6 +53,7 @@ func main() {
 	selfIP := flag.String("self-ip", "127.0.0.1", "IP address for this node")
 	selfPort := flag.Int("self-port", 0, "TCP port for this node (required)")
 	contactIP := flag.String("contact-ip", "127.0.0.1", "IP shared by all contact peers")
+	viz := flag.String("viz", "", "stream a live trace to a protoviz server, e.g. http://localhost:7777")
 	var contactPorts portList
 	flag.Var(&contactPorts, "contact-port", "TCP port of a contact peer (repeatable)")
 	flag.Parse()
@@ -69,11 +71,10 @@ func main() {
 	}
 	logger.Info("broadcast node starting", "self", self.String(), "contacts", len(contacts))
 
+	opts, tracer := runtimeOptions(logger, self, *viz)
+
 	bc := &broadcaster{}
-	rt := protorun.New(self,
-		protorun.WithLogger(logger),
-		protorun.WithTCPTransport(context.Background()),
-	)
+	rt := protorun.New(self, opts...)
 	rt.Register(hyparview.New(self, hyparview.Config{Contacts: contacts}))
 	rt.Register(plumtree.New(self, plumtree.Config{}))
 	rt.Register(&printer{self: self})
@@ -94,10 +95,31 @@ func main() {
 		}
 		bc.broadcast([]byte(line))
 	}
+	if tracer != nil {
+		tracer.Close()
+	}
 	if err := rt.Shutdown(shutdownTimeout); err != nil {
 		logger.Error("runtime shutdown error", "err", err)
 		os.Exit(1)
 	}
+}
+
+// runtimeOptions assembles the runtime options and, when -viz is set, the
+// live HTTP tracer. -viz streams this node's trace to a protoviz server so
+// the flagship demo can visualize itself; the tracer is lossy by design
+// (bounded ring, best-effort POSTs) and is closed on shutdown. The returned
+// tracer is nil when -viz is empty.
+func runtimeOptions(logger *slog.Logger, self transport.Host, viz string) ([]protorun.Option, *viztrace.HTTPTracer) {
+	opts := []protorun.Option{
+		protorun.WithLogger(logger),
+		protorun.WithTCPTransport(context.Background()),
+	}
+	if viz == "" {
+		return opts, nil
+	}
+	tracer := viztrace.NewHTTPTracer(viz, self.String())
+	logger.Info("streaming live trace to protoviz", "server", viz)
+	return append(opts, protorun.WithTracer(tracer)), tracer
 }
 
 // printer prints every broadcast this node delivers.

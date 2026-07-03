@@ -1,6 +1,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Check, Copy, Command as CommandIcon, Monitor, Moon, Sun } from "lucide-react";
-import { parseTrace, type ParsedTrace } from "@/lib/trace";
+import {
+  Check,
+  Copy,
+  Command as CommandIcon,
+  Monitor,
+  Moon,
+  Radio,
+  Sun,
+} from "lucide-react";
+import {
+  emptyTrace,
+  parseLiveLine,
+  parseTrace,
+  type ParsedTrace,
+} from "@/lib/trace";
 import { FoldEngine } from "@/lib/fold";
 import { lensesFor } from "@/lib/lenses";
 import type { ViewFilters } from "@/lib/lens-types";
@@ -10,6 +23,7 @@ import { Scrubber, type FaultMarker } from "@/components/scrubber";
 import { CommandPalette } from "@/components/command-palette";
 import { Inspector } from "@/lenses/inspector";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   ResizableHandle,
@@ -28,7 +42,11 @@ interface Loaded {
   name: string;
   trace: ParsedTrace;
   engine: FoldEngine;
+  live: boolean;
 }
+
+/** Live connection lifecycle surfaced in the header. */
+type ConnState = "connecting" | "live" | "lost";
 
 const TICK_MS = 90;
 
@@ -44,12 +62,29 @@ export default function App() {
   const [hiddenNodes, setHiddenNodes] = useState<Set<string>>(new Set());
   const [theme, setTheme] = useTheme();
   const [copied, setCopied] = useState(false);
+  // Live mode: connection status, a follow toggle that pins the scrubber to
+  // the newest step, and a version counter bumped on every append so the
+  // memoized world/lenses recompute as the in-place trace grows.
+  const [connState, setConnState] = useState<ConnState | null>(null);
+  const [follow, setFollow] = useState(true);
+  const [version, setVersion] = useState(0);
   const acc = useRef(0);
+  const esRef = useRef<EventSource | null>(null);
+  const followRef = useRef(true);
+  const engineRef = useRef<FoldEngine | null>(null);
+
+  useEffect(() => {
+    followRef.current = follow;
+  }, [follow]);
 
   const onLoad = useCallback((t: LoadedTrace) => {
+    esRef.current?.close();
+    esRef.current = null;
     const trace = parseTrace(t.text);
     const engine = new FoldEngine(trace);
-    setLoaded({ name: t.name, trace, engine });
+    engineRef.current = engine;
+    setConnState(null);
+    setLoaded({ name: t.name, trace, engine, live: false });
     setStep(0);
     setPlaying(false);
     setSelectedNode(null);
@@ -59,15 +94,50 @@ export default function App() {
     setActiveLens(lenses[0]?.id ?? "topology");
   }, []);
 
+  const onConnectLive = useCallback((url: string) => {
+    esRef.current?.close();
+    const base = url.replace(/\/$/, "");
+    const trace = emptyTrace();
+    const engine = new FoldEngine(trace);
+    engineRef.current = engine;
+    setLoaded({ name: base, trace, engine, live: true });
+    setStep(0);
+    setPlaying(false);
+    setSelectedNode(null);
+    setHiddenWires(new Set());
+    setHiddenNodes(new Set());
+    setActiveLens("topology");
+    setFollow(true);
+    followRef.current = true;
+    setConnState("connecting");
+
+    const es = new EventSource(`${base}/events`);
+    esRef.current = es;
+    es.onopen = () => setConnState("live");
+    es.onerror = () => setConnState("lost"); // EventSource auto-reconnects
+    es.onmessage = (e) => {
+      const eng = engineRef.current;
+      if (!eng) return;
+      const { event } = parseLiveLine(e.data, eng.trace.events.length);
+      if (!event) return;
+      eng.append([event]);
+      setVersion((v) => v + 1);
+      if (followRef.current) setStep(eng.trace.maxStep);
+    };
+  }, []);
+
+  useEffect(() => () => esRef.current?.close(), []);
+
   const lenses = useMemo(
     () => (loaded ? lensesFor(loaded.trace) : []),
-    [loaded]
+    // version: live streams grow the trace's protocol/wire roster in place.
+    [loaded, version]
   );
   const maxStep = loaded?.trace.maxStep ?? 0;
 
   const world = useMemo(
     () => (loaded ? loaded.engine.worldAtStep(step) : null),
-    [loaded, step]
+    [loaded, step, version]
   );
 
   const faults = useMemo<FaultMarker[]>(() => {
@@ -84,7 +154,29 @@ export default function App() {
       });
     }
     return out;
-  }, [loaded]);
+  }, [loaded, version]);
+
+  // userSeek is every human-initiated scrub (slider, keyboard, palette,
+  // fault marker). In live mode a seek away from the newest step disengages
+  // follow; seeking back to the end re-engages it.
+  const userSeek = useCallback(
+    (s: number) => {
+      setStep(s);
+      if (loaded?.live) {
+        const atLive = s >= (engineRef.current?.trace.maxStep ?? 0);
+        setFollow(atLive);
+        followRef.current = atLive;
+      }
+    },
+    [loaded]
+  );
+
+  const jumpToLive = useCallback(() => {
+    const m = engineRef.current?.trace.maxStep ?? 0;
+    setFollow(true);
+    followRef.current = true;
+    setStep(m);
+  }, []);
 
   // Playback loop.
   useEffect(() => {
@@ -121,19 +213,19 @@ export default function App() {
       switch (e.key) {
         case "ArrowLeft":
           e.preventDefault();
-          setStep((s) => Math.max(0, s - 1));
+          userSeek(Math.max(0, step - 1));
           break;
         case "ArrowRight":
           e.preventDefault();
-          setStep((s) => Math.min(maxStep, s + 1));
+          userSeek(Math.min(maxStep, step + 1));
           break;
         case "Home":
           e.preventDefault();
-          setStep(0);
+          userSeek(0);
           break;
         case "End":
           e.preventDefault();
-          setStep(maxStep);
+          userSeek(maxStep);
           break;
         case " ":
           e.preventDefault();
@@ -143,7 +235,7 @@ export default function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [loaded, maxStep]);
+  }, [loaded, maxStep, step, userSeek]);
 
   const filters: ViewFilters = useMemo(
     () => ({ hiddenWires, hiddenNodes }),
@@ -188,6 +280,9 @@ export default function App() {
           {loaded && (
             <span className="text-xs text-muted-foreground">{loaded.name}</span>
           )}
+          {loaded?.live && connState && (
+            <LiveBadge state={connState} following={follow} />
+          )}
           <div className="ml-auto flex items-center gap-2">
             <Button
               variant="outline"
@@ -208,10 +303,11 @@ export default function App() {
                 Open a protocol trace
               </h1>
               <p className="mb-4 text-sm text-muted-foreground">
-                A protoviz/1 JSONL trace from prototest. Scrub through a run,
-                watch the overlay form, click nodes to inspect state.
+                A protoviz/1 JSONL trace from prototest, or a live stream from a
+                running cluster. Scrub through a run, watch the overlay form,
+                click nodes to inspect state.
               </p>
-              <Loader onLoad={onLoad} />
+              <Loader onLoad={onLoad} onConnectLive={onConnectLive} />
             </div>
           </div>
         ) : (
@@ -239,7 +335,7 @@ export default function App() {
                   onCopySeed={copySeed}
                 />
                 <div className="mt-4">
-                  <Loader onLoad={onLoad} />
+                  <Loader onLoad={onLoad} onConnectLive={onConnectLive} />
                 </div>
               </aside>
 
@@ -280,9 +376,12 @@ export default function App() {
               playing={playing}
               speed={speed}
               faults={faults}
-              onStep={setStep}
+              onStep={userSeek}
               onTogglePlay={() => setPlaying((p) => !p)}
               onSpeed={setSpeed}
+              live={loaded.live}
+              following={follow}
+              onJumpToLive={jumpToLive}
             />
           </>
         )}
@@ -296,7 +395,7 @@ export default function App() {
             activeLens={activeLens}
             filters={filters}
             maxStep={maxStep}
-            onJumpStep={setStep}
+            onJumpStep={userSeek}
             onSelectLens={setActiveLens}
             onToggleWire={toggleWire}
             onToggleNode={toggleNode}
@@ -324,22 +423,25 @@ function RunSummary({
         <Stat label="steps" value={trace.maxStep} />
         <Stat label="events" value={trace.events.length} />
       </div>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <button
-            onClick={onCopySeed}
-            className="flex w-full items-center justify-between rounded-md border px-2 py-1.5 text-left font-mono text-xs hover:bg-accent"
-          >
-            <span>prototest.WithSeed({trace.meta.seed})</span>
-            {copied ? (
-              <Check className="h-3.5 w-3.5 text-emerald-500" />
-            ) : (
-              <Copy className="h-3.5 w-3.5 text-muted-foreground" />
-            )}
-          </button>
-        </TooltipTrigger>
-        <TooltipContent>Copy the reproduce seed</TooltipContent>
-      </Tooltip>
+      {/* Live runs have no reproduce seed, so no seed banner. */}
+      {!loaded.live && (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              onClick={onCopySeed}
+              className="flex w-full items-center justify-between rounded-md border px-2 py-1.5 text-left font-mono text-xs hover:bg-accent"
+            >
+              <span>prototest.WithSeed({trace.meta.seed})</span>
+              {copied ? (
+                <Check className="h-3.5 w-3.5 text-emerald-500" />
+              ) : (
+                <Copy className="h-3.5 w-3.5 text-muted-foreground" />
+              )}
+            </button>
+          </TooltipTrigger>
+          <TooltipContent>Copy the reproduce seed</TooltipContent>
+        </Tooltip>
+      )}
       {trace.warnings.length > 0 && (
         <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-xs text-amber-700 dark:text-amber-400">
           {trace.warnings.length} parse warning
@@ -347,6 +449,37 @@ function RunSummary({
         </div>
       )}
     </div>
+  );
+}
+
+function LiveBadge({
+  state,
+  following,
+}: {
+  state: ConnState;
+  following: boolean;
+}) {
+  const label =
+    state === "live"
+      ? following
+        ? "Live"
+        : "Live (paused)"
+      : state === "connecting"
+        ? "Connecting…"
+        : "Reconnecting…";
+  const tone =
+    state === "live"
+      ? following
+        ? "border-emerald-500/50 text-emerald-600 dark:text-emerald-400"
+        : "border-amber-500/50 text-amber-600 dark:text-amber-400"
+      : "border-muted-foreground/40 text-muted-foreground";
+  return (
+    <Badge variant="outline" className={`gap-1.5 ${tone}`}>
+      <Radio
+        className={`h-3 w-3 ${state === "live" && following ? "animate-pulse" : ""}`}
+      />
+      {label}
+    </Badge>
   );
 }
 

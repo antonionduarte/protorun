@@ -3,10 +3,12 @@
 // /<name>.jsonl). After a load the parent shows the run summary + seed badge.
 
 import { useCallback, useRef, useState } from "react";
-import { Upload } from "lucide-react";
+import { Radio, Upload } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+
+const DEFAULT_LIVE_URL = "http://localhost:7777";
 
 export interface SampleTrace {
   file: string;
@@ -44,12 +46,15 @@ export interface LoadedTrace {
 
 export function Loader({
   onLoad,
+  onConnectLive,
   busy,
 }: {
   onLoad: (t: LoadedTrace) => void;
+  onConnectLive?: (url: string) => void;
   busy?: boolean;
 }) {
   const [dragging, setDragging] = useState(false);
+  const [liveUrl, setLiveUrl] = useState(DEFAULT_LIVE_URL);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const readFile = useCallback(
@@ -113,6 +118,35 @@ export function Loader({
           }}
         />
       </div>
+
+      {onConnectLive && (
+        <div>
+          <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            Connect live
+          </h3>
+          <form
+            className="flex gap-2"
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (liveUrl.trim()) onConnectLive(liveUrl.trim());
+            }}
+          >
+            <input
+              type="url"
+              value={liveUrl}
+              onChange={(e) => setLiveUrl(e.target.value)}
+              placeholder={DEFAULT_LIVE_URL}
+              className="min-w-0 flex-1 rounded-md border bg-background px-2 py-1.5 text-xs"
+            />
+            <Button type="submit" variant="outline" size="sm" className="gap-1.5">
+              <Radio className="h-3.5 w-3.5" /> Connect
+            </Button>
+          </form>
+          <p className="mt-1.5 text-xs text-muted-foreground">
+            Stream from a running <code>protoviz</code> server.
+          </p>
+        </div>
+      )}
 
       <div>
         <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">

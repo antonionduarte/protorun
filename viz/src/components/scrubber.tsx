@@ -5,6 +5,7 @@
 // Keyboard single-stepping (arrows / Home / End) is wired at the App level.
 
 import {
+  ChevronsRight,
   Pause,
   Play,
   SkipBack,
@@ -42,6 +43,10 @@ export interface ScrubberProps {
   onStep: (s: number) => void;
   onTogglePlay: () => void;
   onSpeed: (s: number) => void;
+  /** Live mode: show a jump-to-live control; `following` pins to newest. */
+  live?: boolean;
+  following?: boolean;
+  onJumpToLive?: () => void;
 }
 
 const SPEEDS = [0.5, 1, 4, 16];
@@ -71,6 +76,9 @@ export function Scrubber({
   onStep,
   onTogglePlay,
   onSpeed,
+  live,
+  following,
+  onJumpToLive,
 }: ScrubberProps) {
   return (
     <div className="flex items-center gap-3 border-t bg-background px-4 py-2">
@@ -153,6 +161,20 @@ export function Scrubber({
         step {step}/{maxStep}
         <span className="ml-2 text-foreground">{virtualTime}</span>
       </div>
+
+      {live && (
+        <Button
+          variant={following ? "ghost" : "default"}
+          size="sm"
+          className="gap-1.5"
+          disabled={following}
+          aria-label="Jump to live"
+          onClick={onJumpToLive}
+        >
+          <ChevronsRight className="h-3.5 w-3.5" />
+          Live
+        </Button>
+      )}
     </div>
   );
 }
