@@ -5,13 +5,14 @@ can stack, run, and swap. They live under `pkg/protocols/`, all in the core
 module (zero third-party dependencies), and they dogfood every framework
 capability — sessions, timers, IPC, and the seeded simulation.
 
-There are three packages:
+There are four packages:
 
 | Package | What it is |
 |---|---|
 | `pkg/protocols/membership` | The interchangeability seam: a types-only IPC contract. |
 | `pkg/protocols/hyparview` | A partial-view membership protocol (HyParView). |
 | `pkg/protocols/plumtree` | An epidemic broadcast-tree protocol (Plumtree). |
+| `pkg/protocols/raft` | The Raft consensus algorithm — leader election + replicated log. |
 
 The headline is composition: **Plumtree runs over HyParView without either
 knowing about the other.** They meet only at the membership contract.
@@ -123,6 +124,66 @@ every reachable cache during the outage are lost. Bridging longer
 partitions is the application's responsibility (e.g. a periodic snapshot),
 by design — this keeps Plumtree honest and cheap.
 
+## `pkg/protocols/raft`
+
+A faithful implementation of Raft (Ongaro & Ousterhout, "In Search of an
+Understandable Consensus Algorithm", 2014) — leader election, log
+replication, and a linearizable replicated log over a fixed set of
+servers. Unlike HyParView/Plumtree it does **not** sit on the membership
+contract, and that is the point: consensus needs the opposite of gossip
+(see below).
+
+- **What's faithful.** Randomized-timeout leader election (§5.2); the
+  AppendEntries log-consistency check with `nextIndex` backoff for
+  follower log repair (§5.3); commitment by majority counting restricted
+  to **current-term** entries — the Figure-8 rule (§5.4.2); the
+  "up-to-date" vote restriction (§5.4.1); higher-term stepdown on every
+  RPC and reply (§5.1); and persistence of `currentTerm`/`votedFor`/log
+  through a `Storage` seam, written before the triggering reply and
+  reloaded at `Init`.
+
+- **Why not HyParView underneath.** A consensus group has fixed, total
+  membership: every server must know the whole roster to compute "have I
+  heard from a majority of *all* servers". A partial-view membership
+  protocol is engineered to give each node a small, churning *sample* and
+  never a global view — exactly what Raft cannot use. Consensus wants
+  total and stable membership; gossip wants partial and churning. They do
+  not compose, so Raft takes its peers by `Config`, statically.
+
+- **Storage caveat (loud).** The default `MemoryStorage` is **not
+  durable**: on restart it forgets term, vote, and log. That violates
+  Raft's crash-recovery model and can break safety across restarts (a
+  server could vote twice in a term, or a committed entry could be lost if
+  enough servers restart). It exists so tests and demos need no disk; it
+  makes Raft's guarantees hold only for the lifetime of the process.
+  **Production deployments must supply a crash-durable `Storage`** (fsync'd
+  WAL or embedded KV).
+
+- **Out of scope (documented, not stubbed).** Cluster membership change
+  (§6 joint consensus), log compaction/snapshots (§7), client session
+  dedup / exactly-once client semantics, and read-index/lease reads. The
+  log grows without bound and `Propose` is at-least-once from the client's
+  view.
+
+- **Public surface.** A `Propose{Command}` request replies with the
+  assigned `{Index, Term}` on the leader or fails with a `*NotLeaderError`
+  naming the believed leader (for client redirect) elsewhere — note this
+  is *acceptance*, not a commit ack. Commit-and-apply surfaces as an
+  `Applied{Index, Term, Command}` notification published in strict log
+  order, and leadership transitions as `LeaderChanged{Leader, Term}`. A
+  `DebugState` request exposes role/term/commit/log summary for tests.
+
+- **Example wiring** (a 3-node group; each node lists the other two):
+
+  ```go
+  peers := []transport.Host{n1, n2} // the OTHER members
+  rt.Register(raft.New(self, raft.Config{Peers: peers}))
+  // drive it:
+  protorun.SendRequest(ctx, &raft.Propose{Command: cmd},
+      func(rep *raft.ProposeReply, err error) { /* index+term, or NotLeaderError */ })
+  protorun.SubscribeNotification(ctx, func(ev raft.Applied) { apply(ev.Command) })
+  ```
+
 ## Testing them: the Sim is the primary vehicle
 
 Both protocols follow the authoring contract (all state and sends inside
@@ -139,6 +200,14 @@ finish in milliseconds of real time:
   duplicate rate bounded after the tree converges — proving PRUNE works),
   and partition/heal (mid-partition broadcasts stay on their side; after
   heal, GRAFT repairs the tree for subsequent broadcasts).
+- Raft: 5-node election (one leader per term + no spurious re-election
+  over a quiet period), replication (identical applied sequences on every
+  node), leader-crash (new leader keeps all committed entries; the deposed
+  leader rejoins and converges), partition (a minority commits nothing and
+  the heal produces zero applied-sequence divergence), dueling candidates
+  (split votes resolve via randomized timeouts), and a determinism check
+  (same seed ⇒ byte-identical applied trace). Safety is *asserted*, not
+  eyeballed — each test file names the invariant it guards.
 
 Pure logic (view sets, seeded sampling, the payload cache, wire
 round-trips) is covered by ordinary unit tests, so the Sim does not carry

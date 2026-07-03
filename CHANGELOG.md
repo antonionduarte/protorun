@@ -9,6 +9,25 @@ is versioned via the session-layer handshake (`transport.ProtocolVersion`).
 
 ## Unreleased
 
+### Added
+
+- **Raft consensus protocol (`pkg/protocols/raft`).** A faithful,
+  dependency-free implementation of Raft (Ongaro & Ousterhout, 2014) and
+  protorun's first consensus battery: randomized-timeout leader election
+  (§5.2), log replication with `nextIndex` follower repair (§5.3),
+  current-term-only commitment (§5.4.2), the up-to-date vote restriction
+  (§5.4.1), and higher-term stepdown everywhere (§5.1). Static peer set by
+  `Config` (consensus needs total, stable membership — the opposite of a
+  partial-view gossip protocol), a `Storage` persistence seam with an
+  in-memory default (loudly documented as non-durable), and a public
+  surface of `Propose` (→ `{Index, Term}` or `NotLeaderError`), `Applied`
+  (in-order commit notifications), and `LeaderChanged`. Membership change
+  (§6) and log compaction (§7) are out of scope. Safety is asserted, not
+  eyeballed: the Sim suite proves Election Safety, State Machine Safety,
+  Leader Completeness, minority-partition safety, dueling-candidate
+  resolution, and byte-identical determinism, verified under
+  `-race -count=3`.
+
 ### Performance
 
 - **Zero-allocation notification publish.** Profile-guided pass over

@@ -183,10 +183,18 @@ place now that every numbered phase is done:
 - **SWIM.** Out of scope by design — `memberlist` already owns that
   niche in the Go ecosystem; protorun's membership battery is
   HyParView (see `pkg/protocols/hyparview`).
-- **Consensus showcase.** A Paxos/Raft protocol over protorun would
-  prove the composition model at its hardest (a broadcast/dissemination
-  protocol is comparatively forgiving; consensus is not), but it's a
-  v1.x showcase, not a launch battery.
+- **Consensus showcase.** Proving the composition model at its hardest
+  (a broadcast/dissemination protocol is comparatively forgiving;
+  consensus is not).
+  - **Raft — done.** `pkg/protocols/raft` ships a faithful Raft (leader
+    election, log replication, current-term-only commitment, follower log
+    repair, higher-term stepdown) with a `Storage` persistence seam and a
+    Sim suite asserting Election/State-Machine/Leader-Completeness safety,
+    minority-partition safety, dueling-candidate resolution, and
+    byte-identical determinism (`-race -count=3`). Membership change (§6)
+    and snapshots (§7) remain out of scope.
+  - **Paxos — planned.** A (Multi-)Paxos protocol over protorun, as a
+    second consensus data point, is still a v1.x showcase.
 - **Sim event-trace recorder.** `prototest.Sim`'s Phase 4 open question
   ("expose the step hook as a full event-trace recorder, for
   visualization, or keep it minimal") resolved to minimal for launch —

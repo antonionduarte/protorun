@@ -453,6 +453,15 @@ core module (no third-party dependencies):
   lazy-push `IHAVE` announcements, self-optimising via GRAFT/PRUNE.
   Originate with a `Broadcast` request; receive a `Delivered` notification
   per unique message.
+- **`pkg/protocols/raft`** — a faithful Raft (Ongaro & Ousterhout, 2014):
+  randomized-timeout leader election, log replication with `nextIndex`
+  repair, current-term-only commitment (§5.4.2), and the up-to-date vote
+  restriction (§5.4.1), over a **static** peer set with a `Storage`
+  persistence seam. `Propose` a command (get `{Index, Term}` or a
+  `NotLeaderError`), receive `Applied` notifications in log order. Static
+  membership is deliberate — consensus needs total, stable membership,
+  which is the opposite of what a partial-view gossip protocol provides.
+  Membership change (§6) and snapshots (§7) are out of scope.
 
 The point is composition: **Plumtree runs over HyParView without either
 knowing about the other** — they meet only at the contract. Swap HyParView
@@ -467,10 +476,12 @@ protorun.SendRequest(ctx, &plumtree.Broadcast{Payload: line}, func(*plumtree.Bro
 protorun.SubscribeNotification(ctx, func(ev plumtree.Delivered) { /* ... */ })
 ```
 
-Both protocols' primary test suites run on the seeded simulation
+All three protocols' primary test suites run on the seeded simulation
 (`prototest.Sim`): 20-node convergence, churn, shuffle rotation,
-exactly-once broadcast, spanning-tree duplicate bounds, and
-partition/heal — all in milliseconds of real time. See
+exactly-once broadcast, spanning-tree duplicate bounds, partition/heal,
+and — for Raft — Election Safety, State Machine Safety, Leader
+Completeness, and minority-partition safety, all in milliseconds of real
+time. See
 [`docs/protocols.md`](docs/protocols.md) for the full story, and
 [`cmd/broadcast/`](cmd/broadcast/) for the flagship Plumtree-over-
 HyParView-over-TCP demo.
