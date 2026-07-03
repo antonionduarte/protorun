@@ -87,7 +87,10 @@ jobs:
       - name: install golangci-lint
         uses: golangci/golangci-lint-action@v7
         with:
-          version: v2.5.0
+          # Must be built with a Go >= the toolchain directive in
+          # go.mod, or it fails with "Go language version used to
+          # build golangci-lint is lower than the targeted version".
+          version: v2.11.4
 
       # Gate new code against the Go-community standards. Pre-existing
       # violations are not blocking — only regressions and new violations
