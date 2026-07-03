@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/binary"
 	"runtime"
-	"testing"
 	"time"
 
 	"github.com/antonionduarte/protorun/pkg/protorun"
@@ -32,7 +31,7 @@ import (
 //
 // A Sim is not safe for concurrent use; drive it from the test goroutine.
 type Sim struct {
-	t     testing.TB
+	t     TB
 	mesh  *Mesh
 	sched *scheduler
 }
@@ -41,7 +40,7 @@ type Sim struct {
 // pins the schedule; without it the seed comes from the test name. The
 // seed is logged so any run reproduces. WithRealClock is ignored — a Sim
 // requires virtual time.
-func NewSim(t testing.TB, opts ...Option) *Sim {
+func NewSim(t TB, opts ...Option) *Sim {
 	t.Helper()
 	m := newMesh(t, opts...)
 	if m.clock == nil { // WithRealClock passed; a Sim needs virtual time.
@@ -49,7 +48,11 @@ func NewSim(t testing.TB, opts ...Option) *Sim {
 	}
 	s := &scheduler{mesh: m, clock: m.clock}
 	m.sched = s
-	return &Sim{t: t, mesh: m, sched: s}
+	sim := &Sim{t: t, mesh: m, sched: s}
+	if m.recorder != nil {
+		m.recorder.sim = sim
+	}
+	return sim
 }
 
 // Mesh returns the simulation's mesh, so a test can inject faults
@@ -66,6 +69,14 @@ func (s *Sim) Clock() *FakeClock { return s.mesh.clock }
 func (s *Sim) Node(self transport.Host, protocols ...protorun.Protocol) *protorun.Runtime {
 	s.t.Helper()
 	return NewRuntime(s.t, s.mesh, self, protocols)
+}
+
+// RecordState writes a protocol-state snapshot into the trace, for a
+// harness that samples state itself (rather than through WithTraceSampler).
+// The state is marshaled with encoding/json; a protoviz lens decodes the
+// shape. A no-op when the Sim carries no trace recorder.
+func (s *Sim) RecordState(node transport.Host, protocol string, state any) {
+	s.mesh.recorder.recordState(node, protocol, state)
 }
 
 // Run advances the simulation over d of virtual time: it repeatedly
@@ -169,8 +180,19 @@ func (s *scheduler) send(from *Node, to transport.Host, msg bytes.Buffer) {
 	m.mu.Lock()
 	_, connected := from.peers[to]
 	toNode, exists := m.nodes[to]
-	if !connected || !exists || m.dropLocked(from.self, to) {
+	if !connected || !exists {
+		// No live session (or the peer is gone): a silent drop, not a fault
+		// — nothing to record.
 		m.mu.Unlock()
+		return
+	}
+	if drop, reason := m.dropDecisionLocked(from.self, to); drop {
+		m.mu.Unlock()
+		var wireID uint64
+		if b := msg.Bytes(); len(b) >= 8 {
+			wireID = binary.LittleEndian.Uint64(b)
+		}
+		s.mesh.recorder.drop(from.self, to, wireID, reason)
 		return
 	}
 	at := s.clock.Now()
@@ -209,6 +231,7 @@ func (s *scheduler) run(d time.Duration, pred func() bool) bool {
 			return true
 		}
 		s.drainDue()
+		s.mesh.recorder.maybeSample()
 		if pred != nil && pred() {
 			return true
 		}
@@ -217,12 +240,14 @@ func (s *scheduler) run(d time.Duration, pred func() bool) bool {
 			// Nothing more happens before the horizon: land exactly on it
 			// (firing anything due at the horizon) and stop.
 			s.advanceTo(horizon)
+			s.mesh.recorder.maybeSample()
 			if pred != nil {
 				return pred()
 			}
 			return true
 		}
 		s.advanceTo(next)
+		s.mesh.recorder.maybeSample()
 	}
 }
 
@@ -239,12 +264,14 @@ func (s *scheduler) stepInfo() (DeliveryInfo, bool) {
 	// Now) counts as one unit of progress.
 	if s.clock.fireDue() {
 		s.settle()
+		s.mesh.recorder.maybeSample()
 		return DeliveryInfo{Kind: "clock"}, true
 	}
 	if d := s.takeOneDue(s.clock.Now()); d != nil {
 		info := d.info()
 		s.deliver(d)
 		s.settle()
+		s.mesh.recorder.maybeSample()
 		return info, true
 	}
 	next, has := s.nextDeadline()
@@ -252,6 +279,7 @@ func (s *scheduler) stepInfo() (DeliveryInfo, bool) {
 		return DeliveryInfo{}, false
 	}
 	s.advanceTo(next)
+	s.mesh.recorder.maybeSample()
 	return DeliveryInfo{Kind: "clock"}, true
 }
 
@@ -329,10 +357,18 @@ func (s *scheduler) deliver(d *delivery) {
 		return
 	}
 	if d.msg != nil {
+		// Read wire id and size before delivery hands off the buffer.
+		b := d.msg.Bytes()
+		var wireID uint64
+		if len(b) >= 8 {
+			wireID = binary.LittleEndian.Uint64(b)
+		}
+		s.mesh.recorder.deliverMsg(d.from, d.node.self, wireID, len(b))
 		d.node.sink.DeliverMessage(*d.msg, d.from)
 		return
 	}
 	if d.ev != nil {
+		s.mesh.recorder.session(d.node.self, d.ev)
 		d.node.sink.DeliverSessionEvent(d.ev)
 	}
 }
@@ -365,6 +401,7 @@ func (s *scheduler) nextDeadline() (time.Time, bool) {
 func (s *scheduler) advanceTo(t time.Time) {
 	if d := t.Sub(s.clock.Now()); d > 0 {
 		s.clock.Advance(d)
+		s.mesh.recorder.clockAdvance()
 	}
 	s.settle()
 }

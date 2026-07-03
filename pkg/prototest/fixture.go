@@ -1,7 +1,6 @@
 package prototest
 
 import (
-	"testing"
 	"time"
 
 	"github.com/antonionduarte/protorun/pkg/protorun"
@@ -23,7 +22,7 @@ const shutdownTimeout = 5 * time.Second
 // prototest.WithRealClock for wall time. A caller-supplied
 // protorun.WithClock in opts still wins, since options apply in order.
 func NewRuntime(
-	t testing.TB,
+	t TB,
 	mesh *Mesh,
 	self transport.Host,
 	protocols []protorun.Protocol,
@@ -44,6 +43,7 @@ func NewRuntime(
 	for _, p := range protocols {
 		rt.Register(p)
 	}
+	mesh.recorder.node(self, protocols)
 	if err := rt.Start(); err != nil {
 		t.Fatalf("prototest: runtime for %s failed to start: %v", self.String(), err)
 	}

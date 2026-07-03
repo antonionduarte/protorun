@@ -78,6 +78,54 @@ func hashString(s string) uint64 {
 	return h.Sum64()
 }
 
+// wireNames is the reverse of the wire-id hash: wire id -> the string that
+// was hashed to produce it (a type's WireName(), or its Go type name).
+// Populated at codec registration (RegisterCodec, and hence Handle); read
+// only by WireNameOf. A sync.Map because registrations happen concurrently
+// across the runtimes sharing a process and reads are rare and off the hot
+// path.
+var wireNames sync.Map // map[uint64]string
+
+// WireNameOf returns the human-readable name registered for a wire id —
+// the WireName() (or Go type name) that hashed to it — for trace and
+// diagnostic tooling that must label messages by type rather than by an
+// opaque 64-bit id (the prototest trace recorder is the first consumer).
+// It reports false when no codec has been registered for id, so callers
+// can fall back to, e.g., a hex rendering. This is a pure reverse lookup:
+// it never influences routing, encoding, or decoding.
+func WireNameOf(id uint64) (string, bool) {
+	if v, ok := wireNames.Load(id); ok {
+		return v.(string), true
+	}
+	return "", false
+}
+
+// recordWireName remembers id's source string for WireNameOf. First writer
+// wins, so a benign duplicate registration cannot flip an established
+// label.
+func recordWireName(id uint64, name string) {
+	wireNames.LoadOrStore(id, name)
+}
+
+// wireNameOfType returns the string WireID[M] hashes for M — M.WireName()
+// if M implements WireNamer, else M's Go type name — so registration can
+// record the id->name mapping WireNameOf exposes. It mirrors WireID's
+// probe so a pointer-receiver WireName is found even off a typed-nil M.
+func wireNameOfType[M Message]() string {
+	var zero M
+	t := reflect.TypeOf(zero)
+	var probe any
+	if t != nil && t.Kind() == reflect.Pointer {
+		probe = reflect.New(t.Elem()).Interface()
+	} else {
+		probe = zero
+	}
+	if wn, ok := probe.(WireNamer); ok {
+		return wn.WireName()
+	}
+	return typeNameOf[M]()
+}
+
 // Codec is the public typed codec interface a protocol author
 // implements (or supplies via a generic helper like BinaryCodec[M]) to
 // encode and decode a concrete Message type.

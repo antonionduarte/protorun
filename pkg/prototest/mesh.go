@@ -29,7 +29,6 @@ import (
 	"context"
 	"math/rand/v2"
 	"sync"
-	"testing"
 	"time"
 
 	"github.com/antonionduarte/protorun/pkg/protorun"
@@ -85,7 +84,7 @@ func (d delaySpec) sample(rng *rand.Rand) time.Duration {
 // Fault injection (Cut/Heal/Isolate/SetLoss/SetDelay) is applied here and
 // consulted on every send.
 type Mesh struct {
-	t testing.TB
+	t TB
 
 	mu    sync.Mutex
 	nodes map[transport.Host]*Node
@@ -103,6 +102,17 @@ type Mesh struct {
 	loss  map[link]float64
 	delay map[link]delaySpec
 
+	// isolated tracks hosts taken down by Isolate, so a drop across one of
+	// their (cut) links is labelled "isolated" rather than "cut" in a
+	// trace. Purely a diagnostic distinction — the drop happens either way.
+	// Guarded by mu.
+	isolated map[transport.Host]struct{}
+
+	// recorder is non-nil when the mesh is built with a trace option
+	// (WithTrace / WithTraceOnFailure). It observes the schedule the mesh
+	// and Sim scheduler already produce and never perturbs it; see trace.go.
+	recorder *recorder
+
 	// sched is non-nil only under a Sim; when set, Node send/connect/
 	// disconnect route through it instead of the async channels.
 	sched *scheduler
@@ -118,12 +128,12 @@ type Mesh struct {
 // virtual clock by default; pass WithRealClock for wall time. The seed —
 // pinned with WithSeed or derived from t.Name() — is always logged so any
 // run is reproducible.
-func NewMesh(t testing.TB, opts ...Option) *Mesh {
+func NewMesh(t TB, opts ...Option) *Mesh {
 	t.Helper()
 	return newMesh(t, opts...)
 }
 
-func newMesh(t testing.TB, opts ...Option) *Mesh {
+func newMesh(t TB, opts ...Option) *Mesh {
 	cfg := meshConfig{seed: defaultSeed(t.Name())}
 	for _, o := range opts {
 		o(&cfg)
@@ -133,14 +143,16 @@ func newMesh(t testing.TB, opts ...Option) *Mesh {
 		nodes: make(map[transport.Host]*Node),
 		seed:  cfg.seed,
 		//nolint:gosec // A simulation needs a seeded, reproducible PRNG; crypto randomness would defeat determinism.
-		rng:   rand.New(rand.NewPCG(uint64(cfg.seed), pcgStream)),
-		cut:   make(map[link]struct{}),
-		loss:  make(map[link]float64),
-		delay: make(map[link]delaySpec),
+		rng:      rand.New(rand.NewPCG(uint64(cfg.seed), pcgStream)),
+		cut:      make(map[link]struct{}),
+		loss:     make(map[link]float64),
+		delay:    make(map[link]delaySpec),
+		isolated: make(map[transport.Host]struct{}),
 	}
 	if !cfg.realClock {
 		m.clock = NewFakeClock(simEpoch)
 	}
+	m.recorder = newRecorder(t, m, cfg)
 	t.Logf("prototest: seed %d — re-run with prototest.WithSeed(%d) to reproduce", cfg.seed, cfg.seed)
 	return m
 }
@@ -185,11 +197,26 @@ func (m *Mesh) Node(self transport.Host) *Node {
 // dropped and Connect across it fails with SessionFailed.
 func (m *Mesh) Cut(a, b transport.Host) {
 	m.mu.Lock()
+	na, nb, teardown := m.cutLinkLocked(a, b)
+	m.mu.Unlock()
+
+	m.recorder.fault("cut", []transport.Host{a, b}, nil)
+	if teardown {
+		m.surface(na, transport.NewSessionDisconnected(b))
+		m.surface(nb, transport.NewSessionDisconnected(a))
+	}
+}
+
+// cutLinkLocked severs the a<->b link in both directions and purges any
+// in-flight messages, without emitting a fault event or surfacing the
+// disconnects — so Cut and Isolate can label the mutation differently and
+// surface after releasing the lock. It reports the two endpoints and
+// whether a live session was actually torn down. Caller holds m.mu.
+func (m *Mesh) cutLinkLocked(a, b transport.Host) (na, nb *Node, teardown bool) {
 	m.cut[link{a, b}] = struct{}{}
 	m.cut[link{b, a}] = struct{}{}
 	na, aok := m.nodes[a]
 	nb, bok := m.nodes[b]
-	teardown := false
 	if aok && bok {
 		if _, connected := na.peers[b]; connected {
 			delete(na.peers, b)
@@ -200,12 +227,7 @@ func (m *Mesh) Cut(a, b transport.Host) {
 	if m.sched != nil {
 		m.sched.purgeLinkLocked(a, b)
 	}
-	m.mu.Unlock()
-
-	if teardown {
-		m.surface(na, transport.NewSessionDisconnected(b))
-		m.surface(nb, transport.NewSessionDisconnected(a))
-	}
+	return na, nb, teardown
 }
 
 // Heal restores the link between a and b. It does NOT reconnect anything:
@@ -218,22 +240,44 @@ func (m *Mesh) Heal(a, b transport.Host) {
 	m.mu.Lock()
 	delete(m.cut, link{a, b})
 	delete(m.cut, link{b, a})
+	// A heal makes both endpoints reachable again, so neither is fully
+	// isolated any more (a re-isolate re-adds them).
+	delete(m.isolated, a)
+	delete(m.isolated, b)
 	m.mu.Unlock()
+
+	m.recorder.fault("heal", []transport.Host{a, b}, nil)
 }
 
 // Isolate cuts every link of h, partitioning it off from the rest of the
-// mesh. Equivalent to Cut(h, x) for every other node x.
+// mesh. Equivalent to Cut(h, x) for every other node x, but it records a
+// single "isolate" fault (not one "cut" per link) and marks h isolated so
+// drops across its severed links are labelled "isolated" in a trace.
 func (m *Mesh) Isolate(h transport.Host) {
 	m.mu.Lock()
+	m.isolated[h] = struct{}{}
 	others := make([]transport.Host, 0, len(m.nodes))
 	for host := range m.nodes {
 		if host != h {
 			others = append(others, host)
 		}
 	}
-	m.mu.Unlock()
+	type torn struct{ na, nb *Node }
+	var teardowns []torn
+	peers := make([]transport.Host, 0, len(others))
 	for _, x := range others {
-		m.Cut(h, x)
+		na, nb, teardown := m.cutLinkLocked(h, x)
+		if teardown {
+			teardowns = append(teardowns, torn{na, nb})
+			peers = append(peers, x)
+		}
+	}
+	m.mu.Unlock()
+
+	m.recorder.fault("isolate", []transport.Host{h}, nil)
+	for i, td := range teardowns {
+		m.surface(td.na, transport.NewSessionDisconnected(peers[i]))
+		m.surface(td.nb, transport.NewSessionDisconnected(h))
 	}
 }
 
@@ -242,17 +286,19 @@ func (m *Mesh) Isolate(h transport.Host) {
 // whether that message is dropped. p<=0 clears the loss.
 func (m *Mesh) SetLoss(a, b transport.Host, p float64) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	if p <= 0 {
 		delete(m.loss, link{a, b})
 		delete(m.loss, link{b, a})
-		return
+	} else {
+		if p > 1 {
+			p = 1
+		}
+		m.loss[link{a, b}] = p
+		m.loss[link{b, a}] = p
 	}
-	if p > 1 {
-		p = 1
-	}
-	m.loss[link{a, b}] = p
-	m.loss[link{b, a}] = p
+	m.mu.Unlock()
+
+	m.recorder.fault("loss", []transport.Host{a, b}, map[string]any{"p": p})
 }
 
 // SetDelay sets a per-message delivery delay of d ± jitter on the link
@@ -262,15 +308,18 @@ func (m *Mesh) SetLoss(a, b transport.Host, p float64) {
 // bare async mesh they are ignored. d<=0 with jitter<=0 clears the delay.
 func (m *Mesh) SetDelay(a, b transport.Host, d, jitter time.Duration) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	if d <= 0 && jitter <= 0 {
 		delete(m.delay, link{a, b})
 		delete(m.delay, link{b, a})
-		return
+	} else {
+		spec := delaySpec{base: d, jitter: jitter}
+		m.delay[link{a, b}] = spec
+		m.delay[link{b, a}] = spec
 	}
-	spec := delaySpec{base: d, jitter: jitter}
-	m.delay[link{a, b}] = spec
-	m.delay[link{b, a}] = spec
+	m.mu.Unlock()
+
+	m.recorder.fault("delay", []transport.Host{a, b},
+		map[string]any{"base": d.String(), "jitter": jitter.String()})
 }
 
 // isCutLocked reports whether the from->to link is cut. Caller holds
@@ -284,11 +333,30 @@ func (m *Mesh) isCutLocked(from, to transport.Host) bool {
 // fault policy: a cut link, or a seeded loss roll landing under the
 // configured probability. Caller holds m.mu.
 func (m *Mesh) dropLocked(from, to transport.Host) bool {
+	drop, _ := m.dropDecisionLocked(from, to)
+	return drop
+}
+
+// dropDecisionLocked is dropLocked plus the reason a drop happened, for the
+// trace recorder: "cut" for a severed link, "isolated" when either
+// endpoint was taken down by Isolate, or "loss" for a seeded loss roll.
+// It consumes exactly the same RNG as dropLocked (one Float64 only on the
+// not-cut, loss-configured path), so recording a run's drops never
+// perturbs its schedule. Caller holds m.mu.
+func (m *Mesh) dropDecisionLocked(from, to transport.Host) (bool, string) {
 	if m.isCutLocked(from, to) {
-		return true
+		if _, iso := m.isolated[from]; iso {
+			return true, "isolated"
+		}
+		if _, iso := m.isolated[to]; iso {
+			return true, "isolated"
+		}
+		return true, "cut"
 	}
-	p, ok := m.loss[link{from, to}]
-	return ok && m.rng.Float64() < p
+	if p, ok := m.loss[link{from, to}]; ok && m.rng.Float64() < p {
+		return true, "loss"
+	}
+	return false, ""
 }
 
 // surface delivers a session event to n: scheduled through the Sim (at

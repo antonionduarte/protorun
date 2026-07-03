@@ -798,6 +798,7 @@ func (p *protoProtocol) deliverSessionEvent(ev sessionEvent) {
 func RegisterCodec[M Message](ctx ProtocolContext, c Codec[M]) {
 	b := ctx.binding()
 	b.strictWireNameNudge(WireID[M](), typeNameOf[M](), implementsWireNamer[M]())
+	recordWireName(WireID[M](), wireNameOfType[M]())
 	b.registerCodec(WireID[M](), codecAdapter[M]{c: c})
 }
 
