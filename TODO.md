@@ -4,6 +4,22 @@ Pre-launch roadmap lives in [`docs/roadmap.md`](docs/roadmap.md):
 full design-level plans, phase by phase, each ending in a tag.
 Everything below v1.0 may break API and wire format.
 
+## Pending (v0.9 API window — consensus-author friction)
+
+- [x] `SessionFailedHandler`: reactive plain-Connect failure
+      observation (was silently dropped).
+- [x] `Sim.StepUntil` + `DeliveryInfo`: delivery-granular predicate
+      stepping for adversarial tests.
+- [x] `Responder.Fail` errors.As contract documented.
+- [ ] `StaticMembership` helper: hyparview/raft/paxos each hand-roll
+      the same connect-peer-set/reconnect-timer/session-tracking
+      plumbing (~30 lines); extract it.
+- [ ] Self-delivery: `Send(msg, self)` silently goes nowhere; Paxos
+      had to hand-fold the local vote into every quorum (off-by-one
+      trap in majority math). Proposed: loop back through the codec
+      via the normal inbound path, preserving copy semantics.
+      Awaiting maintainer sign-off (changes Send's contract).
+
 ## Pending
 
 - [ ] v1.0.0 gate: wire format frozen (version byte already

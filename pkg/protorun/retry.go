@@ -114,22 +114,24 @@ func (r *Runtime) onSessionUpForRetry(host transport.Host) bool {
 	return true
 }
 
-// onSessionDownForRetry handles a SessionFailed / SessionDisconnected for
-// a tracked host: increments the attempt count and either schedules the
-// next backoff or emits SessionGivenUp if the policy is exhausted.
-// Returns true if the runtime should suppress the standard fanout for
-// this event (when a retry is scheduled, protocols don't need to see
-// every transient SessionFailed).
-//
-// The current implementation does NOT suppress fanout: it simply
-// schedules a retry alongside whatever protocols receive. Returning
-// false keeps fanout enabled.
-func (r *Runtime) onSessionDownForRetry(host transport.Host) (giveUp bool, attempts int) {
+// onSessionDownForRetry handles a SessionFailed / SessionDisconnected
+// for host. When a retry schedule exists (managed=true) it increments
+// the attempt count and either arms the next backoff or signals
+// give-up (giveUp=true) when the policy is exhausted. managed=false
+// means no retry state existed — the failure belongs to a plain
+// Connect, and the session-event mapper surfaces it to protocols as
+// OnSessionFailed instead of suppressing it (retry-managed failures
+// stay suppressed: those protocols see only the eventual
+// SessionConnected or SessionGivenUp outcome).
+func (r *Runtime) onSessionDownForRetry(host transport.Host) (giveUp bool, attempts int, managed bool) {
 	r.retryMu.Lock()
 	defer r.retryMu.Unlock()
 	st, ok := r.connectionRetries[host]
 	if !ok {
-		return false, 0
+		// No retry state: the failure belongs to a plain Connect (or a
+		// peer we never dialed). managed=false tells the session-event
+		// mapper to surface it to protocols instead of suppressing it.
+		return false, 0, false
 	}
 	if st.timer != nil {
 		st.timer.Stop()
@@ -140,7 +142,7 @@ func (r *Runtime) onSessionDownForRetry(host transport.Host) (giveUp bool, attem
 		// Exhausted. Clear state and signal give-up.
 		attempts = st.attempt
 		delete(r.connectionRetries, host)
-		return true, attempts
+		return true, attempts, true
 	}
 	delay := st.policy.nextDelay(st.attempt - 1)
 	r.Logger().Debug("scheduling reconnect",
@@ -163,7 +165,7 @@ func (r *Runtime) onSessionDownForRetry(host transport.Host) (giveUp bool, attem
 			r.Logger().Debug("retry connect failed", "host", host.String(), "err", err)
 		}
 	})
-	return false, 0
+	return false, 0, true
 }
 
 // giveUpRetryNow terminates any retry schedule for host immediately,

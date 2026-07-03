@@ -9,6 +9,25 @@ is versioned via the session-layer handshake (`transport.ProtocolVersion`).
 
 ## Unreleased
 
+### Added (v0.9 API window, from consensus-author friction reports)
+
+- **`SessionFailedHandler`** — protocols can now observe plain-Connect
+  failures reactively (`OnSessionFailed`). Previously `SessionFailed`
+  was consumed by the retry machinery and silently dropped when no
+  retry schedule existed, forcing every fixed-peer-set protocol into
+  poll-based reconnect. Retry-managed failures remain suppressed:
+  those surface only as the eventual `SessionConnected` or
+  `SessionGivenUp` outcome (documented on the interface).
+- **`prototest.Sim.StepUntil(pred, maxSteps)`** — delivery-granular
+  stepping with a `DeliveryInfo` (kind, from, to, wire id) per unit of
+  progress, so adversarial tests can freeze the schedule on conditions
+  like "Nth Accept delivered, no learner informed" instead of
+  reverse-engineering delay schedules.
+- **`Responder.Fail` doc contract** — typed IPC errors are wrapped in
+  `ErrResponderFailed` and must be recovered with `errors.As`; now
+  documented with an example on the `Responder` interface.
+
+
 ### Fixed
 
 - **Raft Storage seam made incremental** after the new load benchmarks

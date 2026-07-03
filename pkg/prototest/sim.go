@@ -2,6 +2,7 @@ package prototest
 
 import (
 	"bytes"
+	"encoding/binary"
 	"runtime"
 	"testing"
 	"time"
@@ -89,7 +90,43 @@ func (s *Sim) RunUntil(pred func() bool, max time.Duration) bool {
 // next deadline and settles. Reports whether any progress was made.
 // Intended for fine-grained tests that want to inspect state between
 // individual deliveries.
-func (s *Sim) Step() bool { return s.sched.step() }
+func (s *Sim) Step() bool { _, ok := s.sched.stepInfo(); return ok }
+
+// DeliveryInfo describes one unit of simulator progress, as observed by
+// StepUntil's predicate. For an application message, WireID is the
+// message's 64-bit wire identifier (match it with protorun.WireID[*M]())
+// and From/To are the sending and receiving nodes. Session events carry
+// From/To with WireID zero. A clock advance or timer fire has Kind
+// "clock" and zero everything else.
+type DeliveryInfo struct {
+	Kind   string // "message", "session", or "clock"
+	From   transport.Host
+	To     transport.Host
+	WireID uint64
+}
+
+// StepUntil advances the simulation one Step at a time, handing each
+// step's DeliveryInfo to pred, and stops after the step for which pred
+// returns true. This is the primitive for freezing a protocol in a
+// dangerous intermediate state that Run/RunUntil would settle straight
+// through — e.g. "stop once the second Accept for ballot n has been
+// delivered, before any learner hears about it" — without reverse-
+// engineering the delay schedule. Returns true when pred fired; false
+// when the simulation ran out of progress or maxSteps was exhausted
+// first. State inspection between steps goes through the protocol's
+// own IPC surface (a DebugState request), same as any sim test.
+func (s *Sim) StepUntil(pred func(DeliveryInfo) bool, maxSteps int) bool {
+	for range maxSteps {
+		info, ok := s.sched.stepInfo()
+		if !ok {
+			return false
+		}
+		if pred(info) {
+			return true
+		}
+	}
+	return false
+}
 
 // --- scheduler ---------------------------------------------------------
 
@@ -194,25 +231,46 @@ func (s *scheduler) run(d time.Duration, pred func() bool) bool {
 // returning true — it reports false only when the simulation has nothing
 // left to do ever. Bound stepping with a predicate or a counter; use
 // RunUntil when you want to stop on a condition.
-func (s *scheduler) step() bool {
+// stepInfo is step plus a description of the unit of progress made,
+// consumed by Sim.StepUntil's predicate.
+func (s *scheduler) stepInfo() (DeliveryInfo, bool) {
 	s.settle()
 	// A timer due at the current instant (After(0), or a re-arm landing on
 	// Now) counts as one unit of progress.
 	if s.clock.fireDue() {
 		s.settle()
-		return true
+		return DeliveryInfo{Kind: "clock"}, true
 	}
 	if d := s.takeOneDue(s.clock.Now()); d != nil {
+		info := d.info()
 		s.deliver(d)
 		s.settle()
-		return true
+		return info, true
 	}
 	next, has := s.nextDeadline()
 	if !has {
-		return false
+		return DeliveryInfo{}, false
 	}
 	s.advanceTo(next)
-	return true
+	return DeliveryInfo{Kind: "clock"}, true
+}
+
+// info describes this delivery for StepUntil predicates. The wire id of
+// an application message is the first 8 bytes of the payload (the
+// application body is [WireID (uint64 LE) || payload]; see
+// docs/wire-format.md).
+func (d *delivery) info() DeliveryInfo {
+	out := DeliveryInfo{From: d.from, To: d.node.self}
+	switch {
+	case d.msg != nil:
+		out.Kind = "message"
+		if b := d.msg.Bytes(); len(b) >= 8 {
+			out.WireID = binary.LittleEndian.Uint64(b)
+		}
+	case d.ev != nil:
+		out.Kind = "session"
+	}
+	return out
 }
 
 // drainDue delivers everything due at the current virtual time: it fires

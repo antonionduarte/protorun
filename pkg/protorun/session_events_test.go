@@ -112,3 +112,60 @@ func TestDispatchSessionEvent_InboundMismatch_NoFanout(t *testing.T) {
 		t.Errorf("expected 1 version_mismatch counter, got %d", n)
 	}
 }
+
+// failWatcherProto records OnSessionFailed deliveries on a channel so
+// the test can observe fanout without reaching into protocol state.
+type failWatcherProto struct {
+	MockProtocol
+	failed chan transport.Host
+}
+
+func (f *failWatcherProto) OnSessionFailed(h transport.Host) { f.failed <- h }
+
+// TestDispatchSessionEvent_PlainConnectFailure_Fanout verifies the two
+// halves of the SessionFailed contract: a failure with NO retry
+// schedule reaches OnSessionFailed (previously it was silently
+// dropped, forcing poll-based reconnect), while a failure under an
+// in-flight retry stays suppressed — those protocols see only the
+// eventual outcome event.
+func TestDispatchSessionEvent_PlainConnectFailure_Fanout(t *testing.T) {
+	peer := transport.NewHost(9003, "127.0.0.1")
+	rt := New(transport.NewHost(9000, "127.0.0.1"))
+	_ = registerMockStack(rt, transport.NewHost(9000, "127.0.0.1"))
+
+	watcher := &failWatcherProto{failed: make(chan transport.Host, 4)}
+	rt.Register(watcher)
+	if err := rt.start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	t.Cleanup(rt.Cancel)
+
+	// No retry state: the failure must fan out.
+	if !rt.dispatchSessionEvent(context.Background(), transport.NewSessionFailed(peer)) {
+		t.Fatalf("dispatchSessionEvent reported ctx cancellation")
+	}
+	select {
+	case h := <-watcher.failed:
+		if h != peer {
+			t.Fatalf("OnSessionFailed(%v), want %v", h, peer)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("OnSessionFailed never delivered for a plain connect failure")
+	}
+
+	// In-flight retry: the same event must be suppressed.
+	rt.retryMu.Lock()
+	rt.connectionRetries[peer] = &retryState{policy: rt.retryPolicy.withDefaults()}
+	rt.retryMu.Unlock()
+	t.Cleanup(func() { rt.stopRetryFor(peer) })
+
+	if !rt.dispatchSessionEvent(context.Background(), transport.NewSessionFailed(peer)) {
+		t.Fatalf("dispatchSessionEvent reported ctx cancellation")
+	}
+	select {
+	case h := <-watcher.failed:
+		t.Fatalf("OnSessionFailed(%v) delivered for a retry-managed failure; want suppression", h)
+	case <-time.After(100 * time.Millisecond):
+		// Suppressed, as documented.
+	}
+}

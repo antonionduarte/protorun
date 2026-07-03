@@ -774,6 +774,10 @@ func (p *protoProtocol) deliverSessionEvent(ev sessionEvent) {
 		if h, ok := p.protocol.(SessionGivenUpHandler); ok {
 			h.OnSessionGivenUp(ev.host, ev.attempts)
 		}
+	case sessionFailedEvent:
+		if h, ok := p.protocol.(SessionFailedHandler); ok {
+			h.OnSessionFailed(ev.host)
+		}
 	}
 }
 

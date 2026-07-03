@@ -58,6 +58,17 @@ func (BaseNotification) isNotification() {}
 // once; subsequent calls are silently dropped. Handlers may capture
 // the responder to reply asynchronously (e.g. after consulting another
 // protocol or waiting on a peer message).
+//
+// Fail WRAPS the supplied error in ErrResponderFailed before it
+// reaches the requester's callback, so a custom error type must be
+// recovered with errors.As (or matched with errors.Is), never a type
+// assertion or type switch:
+//
+//	SendRequest(ctx, &Get{}, func(rep *Val, err error) {
+//	    var nle *NotLeaderError
+//	    if errors.As(err, &nle) { ... } // works
+//	    if _, ok := err.(*NotLeaderError); ok { ... } // never matches
+//	})
 type Responder[Rep Reply] interface {
 	Reply(rep Rep)
 	Fail(err error)

@@ -155,6 +155,17 @@ type SessionDisconnectedHandler interface {
 	OnSessionDisconnected(transport.Host)
 }
 
+// SessionFailedHandler can be implemented by a protocol that wants to be
+// notified when a plain Connect to a Host fails. It fires only for
+// connects with no retry schedule: a ConnectWithRetry failure is
+// absorbed by its backoff and surfaces solely as the eventual
+// SessionConnected (success) or SessionGivenUp (budget exhausted).
+// This is the reactive alternative to polling a reconnect timer for
+// protocols that manage a fixed peer set with plain Connect.
+type SessionFailedHandler interface {
+	OnSessionFailed(transport.Host)
+}
+
 // Internal representation of session events delivered to each protoProtocol.
 type sessionEventType int
 
@@ -162,6 +173,7 @@ const (
 	sessionConnectedEvent sessionEventType = iota
 	sessionDisconnectedEvent
 	sessionGivenUpEvent
+	sessionFailedEvent
 )
 
 type sessionEvent struct {
@@ -693,7 +705,7 @@ func (r *Runtime) dispatchSessionEvent(ctx context.Context, ev transport.Session
 	case *transport.SessionDisconnected:
 		r.metrics.Counter("protorun.session.disconnected", 1, Attr{Key: "host", Value: e.Host().String()})
 		r.markDisconnected(e.Host())
-		giveUp, attempts := r.onSessionDownForRetry(e.Host())
+		giveUp, attempts, _ := r.onSessionDownForRetry(e.Host())
 		if giveUp {
 			r.metrics.Counter("protorun.session.given_up", 1,
 				Attr{Key: "host", Value: e.Host().String()},
@@ -704,19 +716,7 @@ func (r *Runtime) dispatchSessionEvent(ctx context.Context, ev transport.Session
 		}
 		return r.fanoutSessionEvent(ctx, sessionEvent{kind: sessionDisconnectedEvent, host: e.Host()})
 	case *transport.SessionFailed:
-		r.metrics.Counter("protorun.session.failed", 1, Attr{Key: "host", Value: e.Host().String()})
-		giveUp, attempts := r.onSessionDownForRetry(e.Host())
-		if giveUp {
-			r.metrics.Counter("protorun.session.given_up", 1,
-				Attr{Key: "host", Value: e.Host().String()},
-				Attr{Key: "attempts", Value: attempts})
-			return r.fanoutSessionEvent(ctx, sessionEvent{kind: sessionGivenUpEvent, host: e.Host(), attempts: attempts})
-		}
-		// SessionFailed with retry-in-progress is suppressed from fanout:
-		// protocols only see the eventual SessionConnected (success) or
-		// SessionGivenUp (terminal failure). Without a retry policy in
-		// effect this branch is unreachable because no retry state existed.
-		return true
+		return r.onSessionFailedEvent(ctx, e.Host())
 	case *transport.SessionVersionMismatch:
 		r.metrics.Counter("protorun.session.version_mismatch", 1,
 			Attr{Key: "host", Value: e.Host().String()},
@@ -757,6 +757,29 @@ func (r *Runtime) dispatchSessionEvent(ctx context.Context, ev transport.Session
 			Attr{Key: "type", Value: fmt.Sprintf("%T", ev)})
 		return true
 	}
+}
+
+// onSessionFailedEvent maps a transport.SessionFailed onto the retry
+// machinery and the protocol-facing surface. Three outcomes: a retry
+// budget exhausted becomes SessionGivenUp; a retry still in flight is
+// suppressed (those protocols see only the eventual SessionConnected
+// or SessionGivenUp outcome); a plain-Connect failure with no retry
+// schedule fans out as OnSessionFailed — previously it was silently
+// dropped, forcing every fixed-peer-set protocol into poll-based
+// reconnect.
+func (r *Runtime) onSessionFailedEvent(ctx context.Context, host transport.Host) bool {
+	r.metrics.Counter("protorun.session.failed", 1, Attr{Key: "host", Value: host.String()})
+	giveUp, attempts, managed := r.onSessionDownForRetry(host)
+	if giveUp {
+		r.metrics.Counter("protorun.session.given_up", 1,
+			Attr{Key: "host", Value: host.String()},
+			Attr{Key: "attempts", Value: attempts})
+		return r.fanoutSessionEvent(ctx, sessionEvent{kind: sessionGivenUpEvent, host: host, attempts: attempts})
+	}
+	if managed {
+		return true
+	}
+	return r.fanoutSessionEvent(ctx, sessionEvent{kind: sessionFailedEvent, host: host})
 }
 
 // fanoutSessionEvent delivers ev into every protocol's sessionEvents

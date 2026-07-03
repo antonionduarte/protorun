@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/antonionduarte/protorun/pkg/protorun"
 	"github.com/antonionduarte/protorun/pkg/transport"
 )
 
@@ -306,5 +307,36 @@ func TestSim_TimerFiresInVirtualTime(t *testing.T) {
 	// It all happened in virtual time.
 	if got := sim.Clock().Now(); !got.Equal(simEpoch.Add(3500 * time.Millisecond)) {
 		t.Fatalf("virtual clock = %v, want epoch+3.5s", got)
+	}
+}
+
+// TestSim_StepUntil covers the delivery-predicate primitive: stopping
+// the schedule on the first delivery of a specific message type (by
+// wire id, mid-cascade), and the maxSteps bound when the predicate
+// never fires.
+func TestSim_StepUntil(t *testing.T) {
+	sim := NewSim(t, WithSeed(99))
+	a := newFloodProtocol(floodHost(1), floodHost(2))
+	b := newFloodProtocol(floodHost(2), floodHost(1))
+	sim.Node(floodHost(1), a)
+	sim.Node(floodHost(2), b)
+	sim.Run(time.Second) // sessions up
+
+	a.Broadcast(7, 3)
+	floodID := protorun.WireID[*floodMsg]()
+
+	// Stop exactly when the first floodMsg lands on node 2 — before any
+	// re-flood it triggers has been delivered anywhere else.
+	hit := sim.StepUntil(func(d DeliveryInfo) bool {
+		return d.Kind == "message" && d.WireID == floodID && d.To == floodHost(2)
+	}, 1000)
+	if !hit {
+		t.Fatalf("StepUntil never observed the flood delivery to node 2")
+	}
+
+	// A predicate that can never fire exhausts maxSteps (or runs out of
+	// progress) and reports false.
+	if sim.StepUntil(func(DeliveryInfo) bool { return false }, 50) {
+		t.Fatalf("StepUntil reported success for an unsatisfiable predicate")
 	}
 }

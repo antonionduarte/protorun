@@ -195,7 +195,8 @@ registered.
 
 Optional interfaces a protocol can also implement:
 
-- `SessionConnectedHandler` / `SessionDisconnectedHandler` / `SessionGivenUpHandler`
+- `SessionConnectedHandler` / `SessionDisconnectedHandler` /
+  `SessionFailedHandler` / `SessionGivenUpHandler`
   to react to peer lifecycle events.
 - `PanicHandler` to observe when one of your handlers panicked.
 

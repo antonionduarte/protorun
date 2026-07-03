@@ -69,6 +69,13 @@ inbound deliveries. Its loop is:
    Firing a timer enqueues synchronously; wait for quiescence again.
 3. Repeat until the virtual horizon (`Run(d)`), until a predicate holds
    (`RunUntil`), or — for `Step()` — after a single unit of progress.
+   `StepUntil(pred, maxSteps)` is `Step` with eyes: each unit of
+   progress is described by a `DeliveryInfo` (kind, from, to, and the
+   message's wire id), so a test can freeze the schedule on a
+   condition like "the second Accept has been delivered but no
+   learner has heard yet" — the dangerous intermediate states that
+   `Run` would settle straight through — instead of reverse-
+   engineering delay schedules.
 
 Because timers and network deliveries share one timeline, ordering across
 them is exact: a message delayed to `t+5s` is delivered *after* a timer
