@@ -23,6 +23,19 @@ is versioned via the session-layer handshake (`transport.ProtocolVersion`).
   progress, so adversarial tests can freeze the schedule on conditions
   like "Nth Accept delivered, no learner informed" instead of
   reverse-engineering delay schedules.
+- **Send-to-self loopback** — `ctx.Send(msg, self)` now delivers
+  through the normal inbound path instead of silently reaching no
+  one: the handler gets a freshly decoded instance (peer-identical
+  copy semantics, no aliasing), routed by wire id, queued FIFO behind
+  the sender's mailbox. Motivated by Paxos, where every node is a
+  full member of its own quorum and the silent drop forced hand-
+  folded local votes (an off-by-one trap in majority math).
+- **Send-to-self loopback** — `ctx.Send(msg, self)` now delivers
+  through the normal inbound path instead of silently reaching no
+  one: freshly decoded instance (peer-identical copy semantics, no
+  aliasing), routed by wire id, queued FIFO behind the sender's
+  mailbox. Motivated by Paxos, where every node is a full member of
+  its own quorum and the silent drop forced hand-folded local votes.
 - **`Responder.Fail` doc contract** — typed IPC errors are wrapped in
   `ErrResponderFailed` and must be recovered with `errors.As`; now
   documented with an example on the `Responder` interface.

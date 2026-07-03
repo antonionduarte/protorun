@@ -261,6 +261,12 @@ For a custom codec, keep the explicit two-call form —
 > layer (an ack message, or `SendRequest`/`Responder` for a real
 > round-trip) — `Send` only ever promises the local half.
 
+One special case: `Send` to your **own** Host loops back through the
+normal inbound path — the handler receives a freshly decoded instance
+(never an alias of the sent value), queued FIFO behind the mailbox.
+Quorum protocols can broadcast to "all members including self" without
+special-casing the local vote.
+
 ### Inter-protocol coordination (IPC)
 
 Two patterns, both same-runtime only (cross-node still goes through the

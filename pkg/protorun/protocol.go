@@ -61,6 +61,15 @@ type (
 	// Do not treat a nil return as "delivered". If a protocol needs
 	// delivery confirmation, build it at the application level (an ack
 	// message, a request/reply) — Send only promises the local half.
+	//
+	// Sending to the LOCAL Host loops back through the normal inbound
+	// path: no session is involved, the handler receives a freshly
+	// decoded instance (never an alias of the sent value), and the
+	// message queues behind the protocol's current mailbox contents —
+	// the sending handler returns before the self-message is handled.
+	// This makes "broadcast to every member including self" (a node
+	// that is a full member of its own quorum, e.g. a Paxos acceptor)
+	// work without hand-folding the local participant into the count.
 	Sender interface {
 		Send(msg Message, to transport.Host) error
 	}

@@ -14,11 +14,12 @@ Everything below v1.0 may break API and wire format.
 - [ ] `StaticMembership` helper: hyparview/raft/paxos each hand-roll
       the same connect-peer-set/reconnect-timer/session-tracking
       plumbing (~30 lines); extract it.
-- [ ] Self-delivery: `Send(msg, self)` silently goes nowhere; Paxos
-      had to hand-fold the local vote into every quorum (off-by-one
-      trap in majority math). Proposed: loop back through the codec
-      via the normal inbound path, preserving copy semantics.
-      Awaiting maintainer sign-off (changes Send's contract).
+- [x] Self-delivery: `Send(msg, self)` now loops back through the
+      codec via the normal inbound path (fresh decoded instance, no
+      aliasing, FIFO behind the sender's mailbox). `pkg/protocols/
+      paxos` still hand-folds its local vote — correct and tested, so
+      left alone; simplifying it onto self-delivery is optional
+      cleanup for whenever the package is next touched.
 
 ## Pending
 
