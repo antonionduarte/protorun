@@ -27,3 +27,4 @@ CLAUDE.md
 # module + nested codec modules resolved locally). Only the generated
 # checksum file is ignored.
 go.work.sum
+AGENTS.md
