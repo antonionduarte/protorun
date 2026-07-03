@@ -462,6 +462,15 @@ core module (no third-party dependencies):
   membership is deliberate — consensus needs total, stable membership,
   which is the opposite of what a partial-view gossip protocol provides.
   Membership change (§6) and snapshots (§7) are out of scope.
+- **`pkg/protocols/paxos`** — a faithful single-decree Paxos (Lamport,
+  "Paxos Made Simple", 2001): the synod protocol with proposer, acceptor,
+  and learner in one type, per-node **disjoint** ballots, the Phase-2a
+  **value-adoption** rule that makes it safe, and randomized-backoff
+  liveness against dueling proposers, over the same **static** peer set and
+  `Storage` seam as Raft. `Propose` a value (get an ack or an
+  `AlreadyDecidedError`), receive a `Decided` notification exactly once.
+  Single-decree only — log replication is Raft's job; Paxos is the second,
+  independent consensus data point.
 
 The point is composition: **Plumtree runs over HyParView without either
 knowing about the other** — they meet only at the contract. Swap HyParView
@@ -476,12 +485,13 @@ protorun.SendRequest(ctx, &plumtree.Broadcast{Payload: line}, func(*plumtree.Bro
 protorun.SubscribeNotification(ctx, func(ev plumtree.Delivered) { /* ... */ })
 ```
 
-All three protocols' primary test suites run on the seeded simulation
+Every protocol's primary test suite runs on the seeded simulation
 (`prototest.Sim`): 20-node convergence, churn, shuffle rotation,
 exactly-once broadcast, spanning-tree duplicate bounds, partition/heal,
-and — for Raft — Election Safety, State Machine Safety, Leader
-Completeness, and minority-partition safety, all in milliseconds of real
-time. See
+for Raft Election Safety / State Machine Safety / Leader Completeness /
+minority-partition safety, and for Paxos Agreement/Integrity, the
+multi-seed dueling gauntlet, value adoption, and chosen-is-forever — all in
+milliseconds of real time. See
 [`docs/protocols.md`](docs/protocols.md) for the full story, and
 [`cmd/broadcast/`](cmd/broadcast/) for the flagship Plumtree-over-
 HyParView-over-TCP demo.

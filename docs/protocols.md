@@ -5,7 +5,7 @@ can stack, run, and swap. They live under `pkg/protocols/`, all in the core
 module (zero third-party dependencies), and they dogfood every framework
 capability — sessions, timers, IPC, and the seeded simulation.
 
-There are four packages:
+There are five packages:
 
 | Package | What it is |
 |---|---|
@@ -13,6 +13,7 @@ There are four packages:
 | `pkg/protocols/hyparview` | A partial-view membership protocol (HyParView). |
 | `pkg/protocols/plumtree` | An epidemic broadcast-tree protocol (Plumtree). |
 | `pkg/protocols/raft` | The Raft consensus algorithm — leader election + replicated log. |
+| `pkg/protocols/paxos` | Single-decree Paxos — the synod protocol, one immutable value. |
 
 The headline is composition: **Plumtree runs over HyParView without either
 knowing about the other.** They meet only at the membership contract.
@@ -184,13 +185,89 @@ contract, and that is the point: consensus needs the opposite of gossip
   protorun.SubscribeNotification(ctx, func(ev raft.Applied) { apply(ev.Command) })
   ```
 
+## `pkg/protocols/paxos`
+
+A faithful implementation of classic **single-decree Paxos** — Lamport's
+synod protocol from "Paxos Made Simple" (2001). A fixed set of nodes agree
+on **one** immutable value. All three roles (proposer, acceptor, learner)
+live in a single `Protocol` type, and every node plays all three at once.
+Like Raft it does **not** sit on the membership contract — a synod needs
+total, stable membership to compute majority sizes (same rationale as
+Raft's `Config`).
+
+- **What's faithful.** Phase 1 (prepare/promise): a proposer picks a ballot
+  from its own **disjoint** sequence `round*N + nodeIndex`, so no two nodes
+  ever mint the same ballot number — a ballot uniquely identifies its
+  proposer and needs no tie-break; an acceptor promises iff the ballot is
+  strictly above every ballot it has promised. Phase 2 (accept/accepted):
+  on a majority of promises the proposer **must** adopt the highest-ballot
+  accepted value among them (its own only if none was accepted) — this
+  value-adoption rule is the crux of Paxos safety. Learning: an acceptor
+  that accepts announces `Accepted` to every learner, and a value is chosen
+  once a learner sees a majority accept the same ballot. Acceptor state
+  (promised ballot + accepted ballot/value) is persisted through a
+  `Storage` seam before the promise or accepted announcement leaves the
+  process.
+
+- **Safety, informally.** Once a value `v` is chosen at ballot `b` (a
+  majority accepted `b`), every higher ballot's promise quorum intersects
+  that majority in at least one acceptor, which reports `(b, v)`; the
+  adoption rule then forces every ballot above `b` to carry `v` too. So the
+  decree, once chosen, can never change — Agreement holds across all nodes
+  and all future rounds. This is exactly the property a naive proposer that
+  ignores its promises' accepted values would violate.
+
+- **Liveness.** A proposer whose round stalls retries with a higher ballot
+  after a **randomized backoff** from the per-node seeded RNG. That
+  desynchronizes dueling proposers so one eventually completes a round
+  uninterrupted. Lamport's distinguished-proposer (leader) optimization is
+  deliberately **not** implemented — backoff alone drives progress under
+  the Sim.
+
+- **Partition-heal catch-up (documented design).** `Heal` does not
+  reconnect anything, and the framework never replays lost messages. So a
+  node stranded in a minority that could never learn the decision catches
+  up on reconnect: when a session (re)establishes, an acceptor holding an
+  accepted value re-announces it (`OnSessionConnected` in `protocol.go`).
+  After a heal each majority acceptor re-sends its `Accepted` for the chosen
+  ballot to the reconnecting minority node, which tallies a majority and
+  decides. No polling, no special catch-up RPC — the ordinary Phase-2b
+  announcement, replayed on reconnect.
+
+- **Single-decree only (scope).** This package decides **one** value. It is
+  **not** Multi-Paxos: there is no log, no sequence of instances, no
+  leader-lease read path. Log replication is what `pkg/protocols/raft`
+  provides in this tree; Paxos is here as the second, independent consensus
+  data point (the synod, distilled). Storage caveat is identical to Raft's:
+  the default `MemoryStorage` is **not durable** and voids the
+  crash-recovery guarantees — production must supply a crash-durable
+  `Storage`.
+
+- **Public surface.** A `Propose{Value}` request replies with an empty ack
+  (a proposal is underway — NOT a decision) or fails with an
+  `*AlreadyDecidedError` carrying the chosen value if the decree is already
+  settled. The decision surfaces, exactly once per node, as a
+  `Decided{Value, Ballot}` notification. A `DebugState` request exposes
+  promised/accepted/decided state for tests.
+
+- **Example wiring** (a 3-node synod; each node lists the other two):
+
+  ```go
+  peers := []transport.Host{n1, n2} // the OTHER members
+  rt.Register(paxos.New(self, paxos.Config{Peers: peers}))
+  // drive it:
+  protorun.SendRequest(ctx, &paxos.Propose{Value: v},
+      func(_ *paxos.ProposeReply, err error) { /* ack, or AlreadyDecidedError */ })
+  protorun.SubscribeNotification(ctx, func(ev paxos.Decided) { use(ev.Value) })
+  ```
+
 ## Testing them: the Sim is the primary vehicle
 
-Both protocols follow the authoring contract (all state and sends inside
-handlers, no goroutines, no wall-clock reads — each seeds a per-node RNG
-from its own `Host` and sorts before every random pick), so they run under
-`prototest.Sim` deterministically. Their primary suites are Sim-based and
-finish in milliseconds of real time:
+All of these protocols follow the authoring contract (all state and sends
+inside handlers, no goroutines, no wall-clock reads — each seeds a per-node
+RNG from its own `Host` and sorts before every random pick), so they run
+under `prototest.Sim` deterministically. Their primary suites are Sim-based
+and finish in milliseconds of real time:
 
 - HyParView: 20-node convergence from a contact chain (non-empty,
   self-free, symmetric, bounded active views), churn (kill a quarter via
@@ -208,6 +285,16 @@ finish in milliseconds of real time:
   (split votes resolve via randomized timeouts), and a determinism check
   (same seed ⇒ byte-identical applied trace). Safety is *asserted*, not
   eyeballed — each test file names the invariant it guards.
+- Paxos: 5-node happy path (all decide the same value exactly once —
+  Agreement + Integrity), a **multi-seed dueling gauntlet** (two proposers,
+  different values, adversarial delays, ~10 seeds — exactly one value chosen
+  on every seed), value adoption (a majority accepts A's value but nobody
+  learns it, then B drives a higher-ballot round and the synod still decides
+  A — engineered via precise delay timing), quorum (a minority commits
+  nothing; heal lets it catch up to the same value), chosen-is-forever (late
+  proposals of new values still decide the original), and a determinism
+  check (same seed ⇒ byte-identical decision trace). The ballot arithmetic,
+  predicates, and adoption rule are also pinned by ordinary unit tests.
 
 Pure logic (view sets, seeded sampling, the payload cache, wire
 round-trips) is covered by ordinary unit tests, so the Sim does not carry

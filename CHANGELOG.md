@@ -11,6 +11,24 @@ is versioned via the session-layer handshake (`transport.ProtocolVersion`).
 
 ### Added
 
+- **Single-decree Paxos protocol (`pkg/protocols/paxos`).** A faithful,
+  dependency-free implementation of Lamport's synod protocol ("Paxos Made
+  Simple", 2001) and protorun's second consensus battery: proposer,
+  acceptor, and learner in one `Protocol`, per-node **disjoint** ballots
+  (`round*N + nodeIndex`, so ballots never collide and need no tie-break),
+  the Phase-2a **value-adoption** rule that carries a chosen value across
+  higher ballots (the crux of Paxos safety), and randomized-backoff
+  liveness so dueling proposers do not livelock. Static peer set by `Config`
+  and the same `Storage` seam as Raft (in-memory default loudly non-durable);
+  partition-heal catch-up via on-reconnect re-announcement of accepted
+  values. Public surface: `Propose` (→ ack, or `AlreadyDecidedError` with
+  the chosen value) and a `Decided` notification published exactly once per
+  node. Single-decree only — Multi-Paxos / log replication is Raft's job in
+  this tree. Safety is asserted, not eyeballed: the Sim suite proves
+  Agreement + Integrity, a multi-seed dueling gauntlet, the value-adoption
+  rule (engineered via delay timing), minority-cannot-decide, chosen-is-
+  forever, and byte-identical determinism, verified under `-race -count=3`.
+
 - **Raft consensus protocol (`pkg/protocols/raft`).** A faithful,
   dependency-free implementation of Raft (Ongaro & Ousterhout, 2014) and
   protorun's first consensus battery: randomized-timeout leader election

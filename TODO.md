@@ -193,8 +193,14 @@ place now that every numbered phase is done:
     minority-partition safety, dueling-candidate resolution, and
     byte-identical determinism (`-race -count=3`). Membership change (§6)
     and snapshots (§7) remain out of scope.
-  - **Paxos — planned.** A (Multi-)Paxos protocol over protorun, as a
-    second consensus data point, is still a v1.x showcase.
+  - **Paxos — done.** `pkg/protocols/paxos` ships a faithful single-decree
+    Paxos (Lamport's synod: disjoint ballots, promise/accept quorums, the
+    Phase-2a value-adoption rule, randomized-backoff liveness) with the same
+    `Storage` seam and a Sim suite asserting Agreement/Integrity, a
+    multi-seed dueling gauntlet, value adoption, minority-cannot-decide,
+    chosen-is-forever, and byte-identical determinism (`-race -count=3`).
+    Single-decree only; Multi-Paxos / log replication is Raft's role in this
+    tree, so a distinct Multi-Paxos remains an optional future data point.
 - **Sim event-trace recorder.** `prototest.Sim`'s Phase 4 open question
   ("expose the step hook as a full event-trace recorder, for
   visualization, or keep it minimal") resolved to minimal for launch —
