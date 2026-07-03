@@ -4,6 +4,17 @@ Pre-launch roadmap lives in [`docs/roadmap.md`](docs/roadmap.md):
 full design-level plans, phase by phase, each ending in a tag.
 Everything below v1.0 may break API and wire format.
 
+## Pending (protoviz — visual protocol debugger)
+
+- [ ] Phase A: trace format v1 + `prototest` Sim recorder
+      (`WithTrace`) + viewer app (`viz/`, Vite + React + ShadCN
+      default) with Topology/Sequence/Inspector lenses and a step
+      scrubber. Design: `docs/visualizer-design.md`.
+- [ ] Phase B: protocol lenses (membership / broadcast-tree /
+      consensus) + trace-artifact-on-failure test helper.
+- [ ] Phase C: live mode — `Tracer` runtime seam, `cmd/protoviz`
+      server, WebSocket streaming.
+
 ## Pending (v0.9 API window — consensus-author friction)
 
 - [x] `SessionFailedHandler`: reactive plain-Connect failure
