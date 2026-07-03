@@ -3,7 +3,7 @@ module github.com/antonionduarte/protorun/pkg/otel
 go 1.26
 
 require (
-	github.com/antonionduarte/protorun v0.0.0-00010101000000-000000000000
+	github.com/antonionduarte/protorun v0.8.0
 	go.opentelemetry.io/otel v1.44.0
 	go.opentelemetry.io/otel/metric v1.44.0
 	go.opentelemetry.io/otel/sdk/metric v1.44.0
@@ -19,7 +19,3 @@ require (
 	go.opentelemetry.io/otel/trace v1.44.0 // indirect
 	golang.org/x/sys v0.45.0 // indirect
 )
-
-// The core module is developed in lockstep in this repo; resolve it
-// locally rather than through a published version.
-replace github.com/antonionduarte/protorun => ../..
