@@ -384,15 +384,31 @@ func runBroadcast(t *cliTB, out io.Writer, seed int64) {
 		sim.Node(self, hv, pt, drivers[i], probe)
 	}
 
-	// Grow the overlay, then make one link lossy so the trace shows drops
-	// and Plumtree's GRAFT repair, and broadcast a few payloads from node 0.
+	// Act 1 — grow the overlay, then converge the tree: Plumtree starts
+	// all-eager and only PRUNEs on duplicate receipt, so the spanning
+	// tree emerges over a warmup batch of broadcasts. Without this the
+	// trace ends mid-convergence and the tree lens (truthfully) shows a
+	// mesh. A converged tree delivers each broadcast exactly n-1 times.
 	sim.Run(15 * time.Second)
+	for i := range 14 {
+		broadcast(drivers[0], fmt.Sprintf("warmup-%d", i))
+		sim.Run(400 * time.Millisecond)
+	}
+
+	// Act 2 — one lossy link so the trace shows drops and GRAFT repair.
 	sim.Mesh().SetLoss(nodeHost(0), nodeHost(1), 0.30)
 	for i := range 5 {
 		broadcast(drivers[0], fmt.Sprintf("payload-%d", i))
 		sim.Run(500 * time.Millisecond)
 	}
 	sim.Mesh().SetLoss(nodeHost(0), nodeHost(1), 0) // clear
+
+	// Act 3 — clean broadcasts over the converged (possibly re-grafted)
+	// tree, so the trace ends on the steady state the lens should show.
+	for i := range 3 {
+		broadcast(drivers[0], fmt.Sprintf("steady-%d", i))
+		sim.Run(500 * time.Millisecond)
+	}
 	sim.Run(2 * time.Second)
 }
 

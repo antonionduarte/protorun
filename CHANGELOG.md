@@ -9,6 +9,21 @@ is versioned via the session-layer handshake (`transport.ProtocolVersion`).
 
 ## Unreleased
 
+### Fixed
+
+- **Plumtree tree now visibly converges in protoviz.** Three-part
+  fix after the broadcast sample rendered as a mesh: (1)
+  `plumtree.DebugStatsReply` gains `EagerPeers`/`LazyPeers` (the
+  real, sorted link sets) alongside the counters; (2) the tree lens
+  prefers that state over its message-stream reconstruction, which
+  was approximate (undirected pair keys over directional links);
+  (3) the tracegen broadcast scenario runs a 14-broadcast warmup so
+  the tree converges on-trace — Plumtree starts all-eager and only
+  prunes on duplicate receipt, so the old 5-broadcast run honestly
+  ended mid-convergence. The regenerated trace's final wave delivers
+  each broadcast exactly n-1 times over exactly n-1 eager edges.
+
+
 ### Added (protoviz — visual protocol debugger)
 
 - **Live mode (Stage 3 / Phase C).** A `Tracer` runtime seam

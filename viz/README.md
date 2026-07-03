@@ -100,12 +100,16 @@ Inspector panel. Dark / light / system via the default shadcn class mechanism.
 
 ## Dev notes / deviations from the design
 
-- **Plumtree tree edges are derived from the message stream, not state.** The
-  sample trace's `plumtree.DebugStatsReply` carries only counters (Delivered,
-  Duplicates, and Eager/Lazy *counts*), not per-peer eager/lazy lists. The tree
-  lens therefore reconstructs eager/lazy links from `plumtree.Gossip` /
-  `Graft` / `Prune` / `IHave` deliveries up to the current step — which is
-  exactly what those links mean. See `src/lenses/tree.tsx`.
+- **Plumtree tree edges come from real state** —
+  `plumtree.DebugStatsReply.EagerPeers/LazyPeers`, the node's actual
+  directional link sets sampled into the trace. Traces recorded
+  before those fields existed fall back to reconstructing links from
+  `plumtree.Gossip`/`Graft`/`Prune`/`IHave` deliveries, which is
+  approximate (undirected keys over directional links). The bundled
+  broadcast trace also runs a warmup batch of broadcasts so the tree
+  actually CONVERGES on-trace (Plumtree starts all-eager and only
+  prunes on duplicates — a short run truthfully renders as a mesh).
+  See `src/lenses/tree.tsx`.
 - The traces are ground truth: the raft/paxos/hyparview lenses decode the
   exact Go `DebugState*Reply` shapes (`src/lib/protocols.ts`).
 - The graph layout keeps a single persistent `d3-force` simulation and recycles

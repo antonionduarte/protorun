@@ -132,13 +132,20 @@ func (p *Protocol) Start(ctx protorun.ProtocolContext) {
 // on the framework's supported path rather than racing event-loop state.
 type DebugStats struct{ protorun.BaseRequest }
 
-// DebugStatsReply carries a snapshot of this node's Plumtree counters.
+// DebugStatsReply carries a snapshot of this node's Plumtree counters
+// and tree shape. EagerPeers/LazyPeers are the actual sets (sorted), so
+// tooling (protoviz's broadcast-tree lens) can draw the tree from real
+// state instead of reconstructing it from the message stream; the
+// counters remain for tests that only assert cardinality.
 type DebugStatsReply struct {
 	protorun.BaseReply
 	Delivered  int // unique broadcasts delivered
 	Duplicates int // Gossip received for an already-seen id (each pruned)
 	Eager      int // eager (tree) peer count
 	Lazy       int // lazy peer count
+
+	EagerPeers []transport.Host // eager (tree) links, sorted
+	LazyPeers  []transport.Host // lazy (IHave) links, sorted
 }
 
 func (p *Protocol) handleDebugStats(_ *DebugStats, r protorun.Responder[*DebugStatsReply]) {
@@ -147,6 +154,8 @@ func (p *Protocol) handleDebugStats(_ *DebugStats, r protorun.Responder[*DebugSt
 		Duplicates: p.duplicates,
 		Eager:      p.eager.len(),
 		Lazy:       p.lazy.len(),
+		EagerPeers: p.eager.sorted(),
+		LazyPeers:  p.lazy.sorted(),
 	})
 }
 

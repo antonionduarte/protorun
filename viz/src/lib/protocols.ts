@@ -82,8 +82,13 @@ export function decodeHyparview(state: unknown): HyparviewState | null {
 export interface PlumtreeStats {
   delivered: number;
   duplicates: number;
-  eager: number; // count only — the trace carries no per-peer lists
+  eager: number;
   lazy: number;
+  // Per-peer lists (traces from plumtree with EagerPeers/LazyPeers in
+  // DebugStatsReply). Empty on older traces, where the tree lens falls
+  // back to message-stream reconstruction.
+  eagerPeers: Host[];
+  lazyPeers: Host[];
 }
 
 export function decodePlumtree(state: unknown): PlumtreeStats | null {
@@ -95,6 +100,8 @@ export function decodePlumtree(state: unknown): PlumtreeStats | null {
     duplicates: numOr(s.Duplicates, 0),
     eager: numOr(s.Eager, 0),
     lazy: numOr(s.Lazy, 0),
+    eagerPeers: hostList(s.EagerPeers),
+    lazyPeers: hostList(s.LazyPeers),
   };
 }
 
