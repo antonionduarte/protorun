@@ -66,16 +66,6 @@ func (l *raftLog) sliceFrom(index uint64) []LogEntry {
 	return out
 }
 
-// snapshot returns a copy of the whole log for persistence.
-func (l *raftLog) snapshot() []LogEntry {
-	if len(l.entries) == 0 {
-		return nil
-	}
-	out := make([]LogEntry, len(l.entries))
-	copy(out, l.entries)
-	return out
-}
-
 // --- pure decision helpers (unit-tested directly) ----------------------
 
 // logIsUpToDate implements the §5.4.1 "at least as up-to-date" comparison

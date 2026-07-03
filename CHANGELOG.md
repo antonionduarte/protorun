@@ -9,7 +9,35 @@ is versioned via the session-layer handshake (`transport.ProtocolVersion`).
 
 ## Unreleased
 
+### Fixed
+
+- **Raft Storage seam made incremental** after the new load benchmarks
+  exposed per-commit cost growing linearly with log length (the
+  whole-state `Persist` forced an O(log) copy per append; 367 µs and
+  15k allocs per commit by entry 10,000). `Storage` is now
+  `Load`/`SaveTerm`/`AppendEntries(from, entries)` — O(appended) per
+  commit, and the natural shape for a durable WAL. 16x faster, 118x
+  fewer allocations on the 3-node commit bench; per-commit cost is
+  flat in log length. Breaking change to the `raft.Storage`
+  interface (pre-v1).
+
+
 ### Added
+
+- **Load benchmarks for the consensus protocols
+  (`pkg/protocols/raft/bench_test.go`,
+  `pkg/protocols/paxos/bench_test.go`).** Wall-clock, completion-counted
+  cluster benchmarks over a real-clock prototest mesh (and, for Raft, one
+  variant over real localhost TCP): Raft serial commit latency (3/5
+  nodes), pipelined committed-ops throughput (`commits/s`, K=64), and a
+  labeled aggressive-heartbeat variant; single-decree Paxos decision
+  latency (fresh synod per iteration) and a two-proposer contended
+  variant. No public API changes — probes and cluster wiring are
+  test-only. Documents the heartbeat-coupling finding (Raft replicates on
+  `Propose`, not on the tick, so commit latency is not heartbeat-bound)
+  and that in-memory pipelining is leader-event-loop-bound. Each package
+  now also enforces `goleak.VerifyTestMain`. See
+  [`docs/benchmarks.md`](docs/benchmarks.md#consensus-protocols).
 
 - **Single-decree Paxos protocol (`pkg/protocols/paxos`).** A faithful,
   dependency-free implementation of Lamport's synod protocol ("Paxos Made

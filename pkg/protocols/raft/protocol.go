@@ -216,7 +216,7 @@ func (p *Protocol) startElection() {
 	p.votedFor, p.hasVoted = p.self, true
 	p.clearLeader()
 	p.votesGranted = map[transport.Host]bool{p.self: true}
-	p.persist()
+	p.persistTerm()
 	p.resetElectionTimer()
 
 	rv := &RequestVote{
@@ -247,7 +247,7 @@ func (p *Protocol) onRequestVote(msg *RequestVote, from transport.Host) {
 		logIsUpToDate(msg.LastLogTerm, msg.LastLogIndex, p.log.lastTerm(), p.log.lastIndex()) {
 		grant = true
 		p.votedFor, p.hasVoted = from, true
-		p.persist()
+		p.persistTerm()
 		// Granting a vote is progress by a candidate; give it time to win.
 		p.resetElectionTimer()
 	}
@@ -313,7 +313,7 @@ func (p *Protocol) stepDown(term uint64) {
 	if wasLeader {
 		p.heartbeatTimer.Cancel()
 	}
-	p.persist()
+	p.persistTerm()
 	p.resetElectionTimer()
 }
 
@@ -400,7 +400,9 @@ func (p *Protocol) appendConflictFree(prevIndex uint64, entries []LogEntry) {
 		for _, ne := range entries[i:] {
 			p.log.append(LogEntry{Term: ne.Term, Command: append([]byte(nil), ne.Command...)})
 		}
-		p.persist()
+		// Persist exactly the changed suffix: idx is the first index that
+		// was truncated or newly appended.
+		p.cfg.Storage.AppendEntries(idx, entries[i:])
 		return
 	}
 }
@@ -469,7 +471,7 @@ func (p *Protocol) handlePropose(req *Propose, r protorun.Responder[*ProposeRepl
 	}
 	entry := LogEntry{Term: p.currentTerm, Command: append([]byte(nil), req.Command...)}
 	idx := p.log.append(entry)
-	p.persist()
+	p.cfg.Storage.AppendEntries(idx, []LogEntry{entry})
 	// The leader's own match index is its last log index; commitment for a
 	// single-node group can advance immediately.
 	p.maybeAdvanceCommit()
@@ -506,16 +508,13 @@ func (p *Protocol) setLeader(host transport.Host) {
 
 func (p *Protocol) clearLeader() { p.leader, p.hasLeader = transport.Host{}, false }
 
-// persist writes the current durable state through the Storage seam. The
+// persistTerm writes the term/vote pair through the Storage seam. The
 // caller is responsible for calling it before sending any reply that the
-// paper requires to be preceded by a durable write (a vote, a log append).
-func (p *Protocol) persist() {
-	p.cfg.Storage.Persist(PersistentState{
-		CurrentTerm: p.currentTerm,
-		VotedFor:    p.votedFor,
-		HasVoted:    p.hasVoted,
-		Log:         p.log.snapshot(),
-	})
+// paper requires to be preceded by a durable write (a vote). Log appends
+// persist separately and incrementally via Storage.AppendEntries at the
+// two log-mutation sites (handlePropose, appendConflictFree).
+func (p *Protocol) persistTerm() {
+	p.cfg.Storage.SaveTerm(p.currentTerm, p.votedFor, p.hasVoted)
 }
 
 // --- helpers -----------------------------------------------------------

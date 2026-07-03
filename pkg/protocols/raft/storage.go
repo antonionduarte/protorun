@@ -36,17 +36,30 @@ type PersistentState struct {
 // it before replying. An implementation that loses state on restart
 // reduces Raft to its non-crash guarantees only — see MemoryStorage.
 //
-// Persist is called synchronously from the protocol event loop before the
-// corresponding reply is sent, so the ordering "persist, then reply"
-// required by the paper is preserved by the caller; an implementation
-// need only make Persist durable by the time it returns.
+// The seam is incremental on purpose: term/vote changes and log appends
+// are disjoint, and appends carry only the changed suffix, so the cost
+// of persisting a commit is O(entries appended), not O(log). (The
+// original whole-state Persist forced every implementation into an
+// O(log) copy per commit; the load benchmarks caught it as per-commit
+// cost growing linearly with log length.) Both methods are called
+// synchronously from the protocol event loop before the corresponding
+// reply is sent, so the paper's "persist, then reply" ordering is
+// preserved by the caller; an implementation need only be durable by
+// the time it returns, and must not retain (alias) the entries slice
+// or the command bytes it is handed.
 type Storage interface {
 	// Load returns the persisted state at startup (the zero
 	// PersistentState for a fresh server).
 	Load() PersistentState
-	// Persist durably records the full state. It is called on every
-	// change to term, vote, or log.
-	Persist(state PersistentState)
+	// SaveTerm durably records the current term and vote. Called on
+	// every term adoption, self-vote, and vote grant.
+	SaveTerm(term uint64, votedFor transport.Host, hasVoted bool)
+	// AppendEntries durably replaces the log suffix starting at Raft
+	// index from (1-based) with entries: everything at from and above
+	// is discarded, then entries are appended. from is lastIndex+1 for
+	// a pure append (the common case); lower only on follower conflict
+	// truncation, in which case entries is non-empty.
+	AppendEntries(from uint64, entries []LogEntry)
 }
 
 // MemoryStorage is the default Storage: it keeps state in memory only.
@@ -59,28 +72,45 @@ type Storage interface {
 // exists so tests and single-run demos need no disk; it makes Raft's
 // guarantees hold only for the lifetime of the process. Do not ship it.
 //
-// Persist copies the log so the stored snapshot does not alias the
-// caller's live slice; this is O(len(log)) per call, which is fine for a
-// reference implementation but is exactly the kind of thing a real
-// durable Storage would make incremental (append-only WAL).
+// AppendEntries copies only the appended suffix, so persisting a commit
+// is O(entries appended); the whole log is copied once, at Load.
 type MemoryStorage struct {
-	state PersistentState
-	saved bool
+	term     uint64
+	votedFor transport.Host
+	hasVoted bool
+	log      []LogEntry
 }
 
 // NewMemoryStorage returns an empty in-memory Storage.
 func NewMemoryStorage() *MemoryStorage { return &MemoryStorage{} }
 
 func (m *MemoryStorage) Load() PersistentState {
-	if !m.saved {
-		return PersistentState{}
-	}
-	return m.state.clone()
+	return PersistentState{
+		CurrentTerm: m.term,
+		VotedFor:    m.votedFor,
+		HasVoted:    m.hasVoted,
+		Log:         m.log,
+	}.clone()
 }
 
-func (m *MemoryStorage) Persist(state PersistentState) {
-	m.state = state.clone()
-	m.saved = true
+func (m *MemoryStorage) SaveTerm(term uint64, votedFor transport.Host, hasVoted bool) {
+	m.term, m.votedFor, m.hasVoted = term, votedFor, hasVoted
+}
+
+func (m *MemoryStorage) AppendEntries(from uint64, entries []LogEntry) {
+	if from < 1 {
+		from = 1
+	}
+	if keep := from - 1; keep < uint64(len(m.log)) {
+		m.log = m.log[:keep]
+	}
+	for _, e := range entries {
+		kept := LogEntry{Term: e.Term}
+		if e.Command != nil {
+			kept.Command = append([]byte(nil), e.Command...)
+		}
+		m.log = append(m.log, kept)
+	}
 }
 
 // clone returns a deep-enough copy: the log slice (and each entry's

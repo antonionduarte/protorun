@@ -155,6 +155,105 @@ expected order of magnitude for adding two real socket round trips on
 loopback (no NIC, no real network latency) on top of the same
 dispatch machinery.
 
+## Consensus protocols
+
+The six benchmarks above isolate the runtime's own machinery. The
+consensus batteries (`pkg/protocols/raft`, `pkg/protocols/paxos`) are
+benchmarked one layer up — a whole cluster of runtimes reaching
+agreement — in each package's `bench_test.go`. Unlike the runtime
+benchmarks these run on **wall-clock time**: the prototest mesh is
+built with `prototest.WithRealClock()` so `ns/op` is real elapsed time,
+not a simulated schedule (which would collapse to zero). Completion is
+counted, never slept on — every iteration waits on a channel fed by the
+protocol's own `Applied` / `Decided` notification.
+
+### What each benchmark measures
+
+- **`Raft_Commit_3nodes` / `_5nodes`** — *serial commit latency*: one
+  in-flight proposal, timed from `Propose` to the proposer observing
+  its own command `Applied`. That is one replication round trip (the
+  leader appends locally, replicates, and a majority acknowledges).
+- **`Raft_Commit_3nodes_fastHeartbeat`** — the same, with an
+  explicitly-aggressive 1 ms heartbeat instead of 30 ms. It exists to
+  make the heartbeat-coupling finding falsifiable (below).
+- **`Raft_CommitPipelined_5nodes`** — *sustained throughput*: K = 64
+  proposals kept in flight behind a semaphore, reported as `commits/s`.
+- **`Raft_Commit_TCP_3nodes`** — the serial-commit shape over **real
+  TCP** on localhost (sockets, length-prefix framing, the versioned
+  handshake). The honest end-to-end number.
+- **`Paxos_Decide_5nodes`** — single-decree *decision latency*: a
+  fresh 5-node synod per iteration, one proposer, timed from `Propose`
+  to every node publishing `Decided`. Cluster construction/teardown is
+  excluded via `StopTimer`/`StartTimer`; `ns/op` is the ~two-round-trip
+  decision alone.
+- **`Paxos_Decide_Contended_5nodes`** — two proposers nominate
+  different values at once; time to global decision under a proposer
+  duel.
+
+### The heartbeat-coupling finding
+
+**Raft replicates on `Propose`, not on the heartbeat tick.**
+`handlePropose` appends the entry and calls `broadcastAppendEntries()`
+immediately; the heartbeat timer only covers *idle* periods. So the
+proposer's commit latency is a replication round trip, independent of
+`HeartbeatInterval` — which is exactly why `_fastHeartbeat` (1 ms) and
+the default `Commit_3nodes` (30 ms) land within noise of each other
+rather than an order of magnitude apart. (Followers still learn a
+commit only on the *next* `AppendEntries` they receive, so a
+follower's `Applied` can lag by up to one heartbeat — but the
+proposer, which is what these benchmarks time, does not.)
+
+### Numbers
+
+> Taken at a system load average of ~6–25 (busy machine), `-count=6`.
+> Allocation columns are exact regardless of load; ns/op medians are
+> pessimistic. Reproduce on an idle machine with:
+>
+> ```bash
+> go test -bench=. -benchmem -count=6 -run=^$ ./pkg/protocols/raft/
+> go test -bench=. -benchmem -count=6 -run=^$ ./pkg/protocols/paxos/
+> ```
+
+| Benchmark | ns/op (median) | B/op | allocs/op | note |
+|---|---:|---:|---:|---|
+| `Raft_Commit_3nodes` | ≈23 µs | 5.3K | 128 | serial commit, 2-of-3 majority |
+| `Raft_Commit_5nodes` | ≈41 µs | 9.5K | 244 | serial commit, 3-of-5 majority |
+| `Raft_CommitPipelined_5nodes` | — | 36K | ~950 | ≈4.2k commits/s (K=64) |
+| `Raft_Commit_TCP_3nodes` | ≈510 µs | 8K | 232 | real TCP on localhost |
+| `Paxos_Decide_5nodes` | ≈120 µs | 20K | 520 | uncontended, all 5 decide |
+| `Paxos_Decide_Contended_5nodes` | ≈121 µs | 25K | 663 | two-proposer duel |
+
+**The first measurement run caught a real design flaw.** The original
+`Storage` seam took the full `PersistentState` per persist, forcing an
+O(log) copy on every commit: the bench showed per-commit cost growing
+linearly with log length (367 µs, 15,131 allocs, 1.1 MB per 3-node
+commit by iteration 10,000). The seam is now incremental —
+`SaveTerm` for term/vote changes, `AppendEntries(from, entries)` for
+log suffixes — which is also the shape a real durable WAL wants.
+Post-fix, per-commit cost is flat in log length: **16x faster, 118x
+fewer allocations** on the same bench. This is exactly the class of
+bug invariant tests cannot catch and load tests exist for.
+
+Two more observations worth more than the absolute numbers:
+
+- **Pipelining barely beats serial on the in-memory mesh.** At K = 64
+  the sustained rate (`commits/s`) is close to `1 / serial-latency`,
+  because the mesh has ~zero delivery latency, so there is no round-trip
+  time to hide — the bottleneck is the leader's single event loop, which
+  does O(peers) marshal+send work *per `Propose`* (`handlePropose`
+  broadcasts a fresh `AppendEntries` to every peer on each call rather
+  than coalescing pending proposals into one round). Coalescing that
+  broadcast is the obvious lever if pipelined throughput ever matters;
+  on real TCP, where there *is* latency to amortize, pipelining should
+  help more than it does here.
+- **Contention barely shows on a lossless, zero-latency mesh.** Paxos's
+  randomized retry-backoff (the anti-livelock mechanism) only engages
+  when a round is interrupted before it completes; over an instant,
+  lossless mesh both proposers finish Phase 1 + Phase 2 before any retry
+  timer fires, so `Decide_Contended` is not reliably slower than the
+  uncontended case (here it was faster — within the load noise). The
+  duel's cost surfaces under injected delay/loss, not on the happy mesh.
+
 ## Comparing with actor frameworks
 
 It is tempting to put these numbers next to Hollywood's or Ergo's
