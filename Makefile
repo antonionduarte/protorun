@@ -11,7 +11,7 @@
 # together for local builds. Targets that must cover the whole repo
 # loop over this list; root-only helpers (run, bench, coverage gate)
 # stay on the core module.
-MODULES := . pkg/codec/protobuf pkg/transport/quic pkg/config pkg/otel
+MODULES := . cmd pkg/codec/protobuf pkg/transport/quic pkg/config pkg/otel
 
 # -----------------------------------------------------------------------
 # Build / run

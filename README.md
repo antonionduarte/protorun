@@ -94,7 +94,7 @@ the current state):
 | Coordination model | typed IPC contracts (Request/Reply, Notifications) between layers | direct PID references | direct PID/registered-name references | direct PID/name references | direct PID references |
 | Membership/broadcast batteries | HyParView + Plumtree shipped in-tree (`pkg/protocols/`) | none shipped; clusters via Consul.IO | pub/sub + service discovery via external registrars (etcd, Saturn) | pluggable discovery (Consul/etcd/Kubernetes/NATS/mDNS); no shipped gossip algorithm | none shipped |
 | Deterministic full-stack simulation | `prototest.Sim`: seeded scheduler, virtual clock, real runtimes | not documented | not documented | not documented | not documented |
-| Zero-dependency core | yes — root module is stdlib-only; interop (protobuf, QUIC, OTel, YAML) lives in nested modules | no — protobuf + gRPC | yes, advertised for the core; external registrars are opt-in | no — protobuf/CBOR + Consul/etcd/NATS clients | not documented; protobuf + dRPC transport suggests dependencies |
+| Zero-dependency core | yes — the library module is stdlib-only (one test-only dep, goleak); examples and interop (protobuf, QUIC, OTel, YAML) live in nested modules | no — protobuf + gRPC | yes, advertised for the core; external registrars are opt-in | no — protobuf/CBOR + Consul/etcd/NATS clients | not documented; protobuf + dRPC transport suggests dependencies |
 
 Where they win decisively: actor population scale (thousands of
 short-lived, individually addressable actors), remote actor

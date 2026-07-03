@@ -37,9 +37,15 @@ jobs:
       - name: go test
         run: go test ./... -race -coverprofile=coverage.out -covermode=atomic
 
-      # Nested modules (interop codecs, QUIC transport, config, otel) have
-      # their own go.mod and are not covered by the root ./... patterns,
-      # so build+test them explicitly.
+      # Nested modules (examples, interop codecs, QUIC transport, config,
+      # otel) have their own go.mod and are not covered by the root ./...
+      # patterns, so build+test them explicitly.
+      - name: nested module — cmd (examples)
+        run: |
+          cd cmd
+          go build ./...
+          go test ./... -race
+
       - name: nested module — codec/protobuf
         run: |
           cd pkg/codec/protobuf
@@ -66,8 +72,8 @@ jobs:
 
       # Catch regressions in test coverage. The threshold is intentionally
       # below current to leave headroom for refactors; raise it as the
-      # suite grows. cmd/ packages drag the total down because the main
-      # binaries are not exercised under `go test`.
+      # suite grows. Covers the root (library) module only; example
+      # binaries live in the cmd module.
       - name: coverage threshold
         run: |
           threshold=60
@@ -91,6 +97,9 @@ jobs:
 
       - name: vulnerability scan
         run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+      - name: vulnerability scan — cmd
+        run: cd cmd && go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
       - name: vulnerability scan — codec/protobuf
         run: cd pkg/codec/protobuf && go run golang.org/x/vuln/cmd/govulncheck@latest ./...

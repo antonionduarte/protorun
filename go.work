@@ -8,6 +8,7 @@ go 1.26.3
 
 use (
 	.
+	./cmd
 	./pkg/codec/protobuf
 	./pkg/config
 	./pkg/otel

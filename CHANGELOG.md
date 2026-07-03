@@ -9,12 +9,12 @@ is versioned via the session-layer handshake (`transport.ProtocolVersion`).
 
 ## Unreleased
 
-> **Tags below are pending.** Everything since v0.1.0 is still on
-> `main`, undtagged. This block is structured by roadmap phase
-> (`docs/roadmap.md`) rather than as one flat list specifically so each
-> phase can be cut as its own tag (`v0.2.0` … `v0.8.0`) when the time
-> comes — the phase headers below are the intended tag boundaries, not
-> yet real releases.
+> This block is structured by roadmap phase (`docs/roadmap.md`);
+> each phase header below is a tag boundary. v0.2.0 through v0.7.0
+> are tagged at their phase commits; v0.8.0 is tagged at the tip of
+> the pre-launch sweep and additionally includes the `pkg/` layout
+> move and the `cmd` examples-module split described at the end of
+> this block.
 
 ### v0.2.0 — module rename, unified mailbox, timers, Clock seam (Phase 0)
 
@@ -388,6 +388,12 @@ on final shapes.
 ### Repo layout: library code moved under `pkg/`
 
 #### Changed
+
+- **`cmd/` is its own module.** Example binaries consume the
+  `pkg/config` nested module (YAML); splitting them out returns the
+  library module to stdlib-only (single test-only dep, goleak) and
+  makes the zero-dependency-core claim literally true at the
+  `go.mod` level.
 
 - **All library packages relocated to `pkg/`.** The root `protorun`
   package, `transport`, `wire`, `prototest`, and `protocols` (with its
