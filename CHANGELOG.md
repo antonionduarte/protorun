@@ -9,6 +9,25 @@ is versioned via the session-layer handshake (`transport.ProtocolVersion`).
 
 ## Unreleased
 
+### Added (protoviz — visual protocol debugger)
+
+- **`viz/` viewer app** — a static Vite + React + TypeScript + Tailwind
+  app with a default (neutral) shadcn/ui theme that opens `protoviz/1`
+  JSONL traces (drag-and-drop or the four bundled samples) and lets you
+  scrub a run step by step. A tolerant parser (`src/lib/trace.ts`, never
+  throws on a bad line) feeds a keyframed world-state fold engine
+  (`src/lib/fold.ts`, snapshots every 500 events so scrubbing — including
+  backward — is instant on the 6.4k-line hyparview trace). Six lenses:
+  Topology and Sequence (universal), Inspector with per-key state diffing,
+  plus Membership (hyparview), Broadcast tree (plumtree), and Consensus
+  (raft/paxos). Chrome: step scrubber with a fault ribbon, `⌘K` command
+  palette (jump-to-step, wire-type / node filters), lens tabs, a resizable
+  Inspector, and a copyable `prototest.WithSeed(N)` reproduce badge. Unit
+  tests (vitest) exercise the parser and fold engine against the real
+  sample traces. See `viz/README.md`. Deviation: plumtree tree edges are
+  derived from the message stream because `plumtree.DebugStatsReply`
+  carries only counters, not per-peer eager/lazy lists.
+
 ### Added (v0.9 API window, from consensus-author friction reports)
 
 - **`SessionFailedHandler`** — protocols can now observe plain-Connect

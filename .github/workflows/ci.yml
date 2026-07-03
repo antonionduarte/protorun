@@ -115,3 +115,26 @@ jobs:
 
       - name: vulnerability scan — otel
         run: cd pkg/otel && go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+  viz:
+    name: viz (protoviz viewer)
+    runs-on: ubuntu-latest
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+
+      - name: set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: viz/package-lock.json
+
+      - name: npm ci
+        run: cd viz && npm ci
+
+      - name: npm test
+        run: cd viz && npm test
+
+      - name: npm run build
+        run: cd viz && npm run build

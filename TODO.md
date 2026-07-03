@@ -6,12 +6,17 @@ Everything below v1.0 may break API and wire format.
 
 ## Pending (protoviz — visual protocol debugger)
 
-- [ ] Phase A: trace format v1 + `prototest` Sim recorder
+- [x] Phase A: trace format v1 + `prototest` Sim recorder
       (`WithTrace`) + viewer app (`viz/`, Vite + React + ShadCN
       default) with Topology/Sequence/Inspector lenses and a step
       scrubber. Design: `docs/visualizer-design.md`.
-- [ ] Phase B: protocol lenses (membership / broadcast-tree /
+- [x] Phase B: protocol lenses (membership / broadcast-tree /
       consensus) + trace-artifact-on-failure test helper.
+      Viewer at `viz/` (see `viz/README.md`); tolerant parser +
+      keyframed fold engine, six lenses, ⌘K palette, fault ribbon.
+      Deviation: plumtree tree edges are derived from the Gossip/
+      Prune/Graft/IHave stream, since `DebugStatsReply` carries only
+      counters, not per-peer eager/lazy lists.
 - [ ] Phase C: live mode — `Tracer` runtime seam, `cmd/protoviz`
       server, WebSocket streaming.
 

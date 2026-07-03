@@ -519,7 +519,26 @@ as a tutorial, how-to guides, reference, and explanation
 - **Explanation:** [concurrency model](docs/concurrency-model.md) (and
   why protocol composition isn't actors),
   [deterministic simulation](docs/simulation.md),
-  [the protocol library](docs/protocols.md).
+  [the protocol library](docs/protocols.md),
+  [the protoviz visual debugger](docs/visualizer-design.md).
+
+### Visual debugger (protoviz)
+
+`prototest`'s `WithTrace` recorder writes a `protoviz/1` JSONL trace of a
+simulated run — every delivery, drop, session event, fault, and periodic
+protocol-state snapshot. [`viz/`](viz/) is a static web viewer for those
+traces: drag a `.jsonl` in (or pick one of the four bundled samples) and
+scrub the run step by step — an overlay graph, a Lamport sequence diagram,
+protocol-specific lenses (membership, broadcast tree, raft/paxos
+consensus), and a state Inspector with per-key diffing. Backward scrubbing
+is free thanks to the simulator's determinism.
+
+```bash
+cd viz && npm install && npm run dev   # then open a sample trace
+```
+
+See [`viz/README.md`](viz/README.md) for the lens catalogue and dev notes,
+and [`docs/visualizer-design.md`](docs/visualizer-design.md) for the design.
 
 Plus:
 
